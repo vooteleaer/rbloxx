@@ -362,11 +362,11 @@ fi
 
 # agent.json
 if [ ! -f /etc/bloxx/agent.json ]; then
-    SERVER_HASH=""
-    if [ -t 0 ]; then
-        echo
-        _ask "Server destination hash (leave blank to fill in later):" SERVER_HASH
-    fi
+    echo
+    echo "  Open the RBloxx web UI, click '+ Add node' — the server"
+    echo "  destination hash is shown at the top of that dialog."
+    echo
+    _ask "Server destination hash (leave blank to fill in later):" SERVER_HASH
     SERVER_HASH="${SERVER_HASH:-PASTE_SERVER_DEST_HASH_HERE}"
 
     if [ -n "$RNODE_PORT" ]; then
