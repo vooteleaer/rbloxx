@@ -855,15 +855,36 @@ export default function NodePanel({ destHash, node, onDelete, liveTelemetry }: P
 
       {/* Telemetry sparklines */}
       {telemetry.length > 0 && (
-        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-4">
           <div className="flex flex-wrap gap-6">
-            {spark("cpu_pct", "CPU", "%", "#3b82f6", 0, 100)}
-            {spark("ram_pct", "RAM", "%", "#8b5cf6", 0, 100)}
-            {spark("disk_pct", "Disk", "%", "#f59e0b", 0, 100)}
-            {spark("temp_c", "Temp", "°C", "#ef4444")}
-            {spark("batt_soc_pct", "Battery", "%", "#22c55e", 0, 100)}
-            {spark("rnode_airtime_short", "Airtime", "%", "#06b6d4", 0, 100)}
+            {spark("cpu_pct",     "CPU",     "%",  "#3b82f6", 0, 100)}
+            {spark("ram_pct",     "RAM",     "%",  "#8b5cf6", 0, 100)}
+            {spark("disk_pct",   "Disk",    "%",  "#f59e0b", 0, 100)}
+            {spark("temp_c",     "Temp",    "°C", "#ef4444")}
+            {spark("rns_rtt_ms", "RTT",     "ms", "#64748b")}
+            {spark("batt_soc_pct",   "Battery",  "%", "#22c55e", 0, 100)}
+            {spark("batt_power_w",   "Bat power", "W", "#16a34a")}
+            {spark("solar_power_w",  "Solar",    "W", "#eab308")}
           </div>
+
+          {/* RNode section — only rendered when the node has RNode data */}
+          {(() => {
+            const rnodeSparks = [
+              spark("rnode_airtime_short",      "Airtime (short)", "%",   "#06b6d4", 0, 100),
+              spark("rnode_airtime_long",       "Airtime (long)",  "%",   "#0891b2", 0, 100),
+              spark("rnode_channel_load_short", "Ch load",         "%",   "#7c3aed", 0, 100),
+              spark("rnode_noise_floor",        "Noise floor",     "dBm", "#94a3b8"),
+              spark("rnode_interference_dbm",   "Interference",    "dBm", "#f43f5e"),
+              spark("rnode_bitrate",            "Bitrate",         "bps", "#10b981"),
+            ].filter(Boolean);
+            if (!rnodeSparks.length) return null;
+            return (
+              <div>
+                <p className="text-xs text-gray-400 mb-3">RNode</p>
+                <div className="flex flex-wrap gap-6">{rnodeSparks}</div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
