@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.db
+
+# Node / frontend
+node_modules/
+dist/
+server/frontend/.vite/
+
+# Secrets / runtime state
+.env
+/etc/bloxx/
+identity
+*.identity
+server_identity
+
+# Backups
+*.bloxx_backup
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Claude Code
+.claude/

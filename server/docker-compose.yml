@@ -1,0 +1,14 @@
+services:
+  rbloxx:
+    image: vooteleaer/rbloxx-server:latest
+    restart: unless-stopped
+    network_mode: host
+    devices:
+      # Heltec LoRa V3 RNode (CP2102)
+      - /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0:/dev/ttyACM0
+    volumes:
+      - /var/lib/bloxx:/var/lib/bloxx           # SQLite DB (persistent on host)
+      - /root/.reticulum:/root/.reticulum       # RNS config + identity (persistent)
+    environment:
+      BLOXX_DB: /var/lib/bloxx/bloxx.db
+      BLOXX_RETENTION_DAYS: "30"

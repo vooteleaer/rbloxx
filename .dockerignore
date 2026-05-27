@@ -1,0 +1,11 @@
+server/frontend/node_modules/
+server/frontend/dist/
+server/backend/.venv/
+server/backend/dist/
+server/backend/*.db
+**/__pycache__/
+**/*.py[cod]
+**/.env
+install/
+deploy_node.py
+README.md

@@ -1,0 +1,5 @@
+# rns and msgpack are already installed by rnsd — no pip needed on RNode-only nodes
+# smbus2 is optional: only needed for INA226/INA219 battery monitoring hardware
+rns
+msgpack
+smbus2

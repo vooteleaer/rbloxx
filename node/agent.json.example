@@ -1,0 +1,25 @@
+{
+  "identity_path": "/etc/bloxx/identity",
+  "announce_interval": 300,
+  "server_dest_hashes": [
+    "aabbccddeeff0011223344556677889900aabbccddeeff0011223344556677889900"
+  ],
+  "trusted_server_identities": [],
+  "rns_config_path": "~/.reticulum/config",
+  "thresholds": {
+    "batt_critical_pct": 10,
+    "disk_full_pct": 90,
+    "temp_critical_c": 80,
+    "load_high_factor": 2.0,
+    "swap_high_pct": 80,
+    "no_peers_minutes": 30,
+    "zero_traffic_minutes": 15
+  },
+  "watchdog_timeout_s": 300,
+  "watchdog_feed_interval_s": 10,
+  "rnode_ports": ["/dev/ttyUSB0"],
+  "shutdown_soc_pct": 5,
+  "power_backend": "none",
+  "power_i2c_bus": 1,
+  "power_i2c_addr": "0x40"
+}
