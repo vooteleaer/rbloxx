@@ -15,7 +15,7 @@ export default function NodeSidebarItem({ node, isSelected, isServer, onSelect, 
     ? "bg-amber-400"
     : "bg-green-500";
 
-  const label = node.hostname ?? node.dest_hash.slice(0, 12);
+  const label = node.label ?? node.hostname ?? node.dest_hash.slice(0, 12);
 
   return (
     <div

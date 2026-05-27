@@ -219,13 +219,14 @@ export default function NodesView() {
                 <p className="mt-1 text-xs text-gray-400">Printed at the end of <span className="font-mono">install_node.sh</span>, or run it with <span className="font-mono">--show-hash</span>.</p>
               </div>
               <div>
-                <label className="text-xs text-gray-500 block mb-1">Name (optional)</label>
+                <label className="text-xs text-gray-500 block mb-1">Label (optional)</label>
                 <input
                   value={addName}
                   onChange={(e) => setAddName(e.target.value)}
                   className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-300"
                   placeholder="e.g. rtr1"
                 />
+                <p className="mt-1 text-xs text-gray-400">Shown in the sidebar instead of the system hostname.</p>
               </div>
               {addError && <p className="text-xs text-red-600">{addError}</p>}
               <div className="flex gap-2 justify-end pt-1">

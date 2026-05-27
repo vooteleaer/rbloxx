@@ -12,6 +12,7 @@ CREATE_NODES = """
 CREATE TABLE IF NOT EXISTS nodes (
     dest_hash   TEXT PRIMARY KEY,
     identity_hash TEXT,
+    label       TEXT,
     hostname    TEXT,
     version     TEXT,
     first_seen  REAL,
@@ -102,7 +103,11 @@ async def init_db(db_path: str = DB_PATH) -> None:
         await db.execute(CREATE_CONFIG_SNAPSHOTS)
         await db.execute(CREATE_CONFIG_IDX)
         await db.execute(CREATE_TOPOLOGY)
-        # Migrate: add RNode columns if they don't exist yet
+        # Migrate: add columns that didn't exist in earlier schema versions
+        async with db.execute("PRAGMA table_info(nodes)") as cur:
+            node_cols = {row[1] async for row in cur}
+        if "label" not in node_cols:
+            await db.execute("ALTER TABLE nodes ADD COLUMN label TEXT")
         async with db.execute("PRAGMA table_info(telemetry)") as cur:
             existing = {row[1] async for row in cur}
         for col, typ in _RNODE_COLUMNS:
@@ -113,14 +118,15 @@ async def init_db(db_path: str = DB_PATH) -> None:
 
 async def upsert_node(dest_hash: str, data: dict, db_path: str = DB_PATH) -> None:
     now = time.time()
-    # Allow callers to force last_seen=0 so the node starts offline (e.g. pre-registration from image build)
+    # Allow callers to force last_seen=0 so the node starts offline (e.g. pre-registration)
     last_seen = data.get("last_seen", now)
     async with aiosqlite.connect(db_path) as db:
         await db.execute("""
-            INSERT INTO nodes (dest_hash, identity_hash, hostname, version, first_seen, last_seen, last_errors)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO nodes (dest_hash, identity_hash, label, hostname, version, first_seen, last_seen, last_errors)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(dest_hash) DO UPDATE SET
                 identity_hash = COALESCE(excluded.identity_hash, identity_hash),
+                label         = COALESCE(excluded.label, label),
                 hostname      = COALESCE(excluded.hostname, hostname),
                 version       = COALESCE(excluded.version, version),
                 last_seen     = excluded.last_seen,
@@ -128,6 +134,7 @@ async def upsert_node(dest_hash: str, data: dict, db_path: str = DB_PATH) -> Non
         """, (
             dest_hash,
             data.get("identity_hash"),
+            data.get("label"),
             data.get("hostname"),
             data.get("version"),
             now,
@@ -139,6 +146,7 @@ async def upsert_node(dest_hash: str, data: dict, db_path: str = DB_PATH) -> Non
 
 async def record_telemetry(dest_hash: str, data: dict, db_path: str = DB_PATH) -> None:
     ts = data.get("timestamp", time.time())
+    now = time.time()  # server receipt time — used for last_seen so it never precedes first_seen
     async with aiosqlite.connect(db_path) as db:
         await db.execute("""
             INSERT INTO telemetry
@@ -167,10 +175,10 @@ async def record_telemetry(dest_hash: str, data: dict, db_path: str = DB_PATH) -
             json.dumps(data.get("interfaces")),
             json.dumps(data.get("errors", [])),
         ))
-        # Update last_seen and errors on node row
+        # Use server receipt time so last_seen is never earlier than first_seen
         await db.execute("""
             UPDATE nodes SET last_seen = ?, last_errors = ? WHERE dest_hash = ?
-        """, (ts, json.dumps(data.get("errors", [])), dest_hash))
+        """, (now, json.dumps(data.get("errors", [])), dest_hash))
         await db.commit()
 
 

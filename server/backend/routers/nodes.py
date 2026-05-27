@@ -11,7 +11,11 @@ router = APIRouter(prefix="/api/v1/nodes", tags=["nodes"])
 
 class AddNodeBody(BaseModel):
     dest_hash: str
-    hostname: str | None = None
+    label: str | None = None
+
+
+class PatchNodeBody(BaseModel):
+    label: str | None = None
 
 
 @router.get("")
@@ -27,11 +31,23 @@ async def add_node(body: AddNodeBody):
         raise HTTPException(400, "dest_hash is required")
     existing = await node_registry.get_node(dest_hash)
     if existing:
-        return existing
+        if body.label and not existing.get("label"):
+            await node_registry.upsert_node(dest_hash, {"label": body.label})
+        return await node_registry.get_node(dest_hash)
     await node_registry.upsert_node(dest_hash, {
-        "hostname": body.hostname or None,
+        "label": body.label or None,
         "last_seen": 0,
     })
+    return await node_registry.get_node(dest_hash)
+
+
+@router.patch("/{dest_hash}")
+async def patch_node(dest_hash: str, body: PatchNodeBody):
+    """Update mutable node fields (currently: label)."""
+    node = await node_registry.get_node(dest_hash)
+    if node is None:
+        raise HTTPException(404, "Node not found")
+    await node_registry.upsert_node(dest_hash, {"label": body.label})
     return await node_registry.get_node(dest_hash)
 
 

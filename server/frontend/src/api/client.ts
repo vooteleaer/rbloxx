@@ -13,11 +13,17 @@ export const api = {
     get: (hash: string) => req<Node>(`/nodes/${hash}`),
     telemetry: (hash: string, limit = 100) =>
       req<TelemetryRow[]>(`/nodes/${hash}/telemetry?limit=${limit}`),
-    add: (destHash: string, hostname?: string) =>
+    add: (destHash: string, label?: string) =>
       req<Node>("/nodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dest_hash: destHash, hostname: hostname || null }),
+        body: JSON.stringify({ dest_hash: destHash, label: label || null }),
+      }),
+    patch: (hash: string, label: string | null) =>
+      req<Node>(`/nodes/${hash}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
       }),
     delete: (hash: string) =>
       req<{ ok: boolean }>(`/nodes/${hash}`, { method: "DELETE" }),
@@ -57,6 +63,7 @@ export const api = {
 export interface Node {
   dest_hash: string;
   identity_hash: string | null;
+  label: string | null;
   hostname: string | null;
   version: string | null;
   first_seen: number;

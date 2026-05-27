@@ -762,6 +762,8 @@ type Tab = "rns" | "agent";
 export default function NodePanel({ destHash, node, onDelete }: Props) {
   const [telemetry, setTelemetry] = useState<TelemetryRow[]>([]);
   const [tab, setTab] = useState<Tab>("rns");
+  const [labelEdit, setLabelEdit] = useState<string | null>(null);
+  const [labelSaving, setLabelSaving] = useState(false);
 
   useEffect(() => {
     api.nodes.telemetry(destHash, 60).then(setTelemetry).catch(() => {});
@@ -773,6 +775,17 @@ export default function NodePanel({ destHash, node, onDelete }: Props) {
     onDelete();
   }
 
+  async function saveLabel() {
+    if (labelEdit === null) return;
+    setLabelSaving(true);
+    try {
+      await api.nodes.patch(destHash, labelEdit.trim() || null);
+    } catch { /* ignore */ } finally {
+      setLabelSaving(false);
+      setLabelEdit(null);
+    }
+  }
+
   const spark = (field: keyof TelemetryRow, label: string, unit: string, color?: string, min?: number, max?: number) => {
     const data = [...telemetry].reverse().map((r) => r[field] as number | null);
     const latest = telemetry[0]?.[field] as number | null ?? null;
@@ -781,12 +794,37 @@ export default function NodePanel({ destHash, node, onDelete }: Props) {
   };
 
   const dotColor = !node.online ? "text-red-500" : node.last_errors.length ? "text-amber-400" : "text-green-500";
+  const displayName = node.label ?? node.hostname ?? "Unknown";
 
   return (
     <div className="p-5 space-y-5">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <h2 className="text-xl font-bold text-gray-900">{node.hostname ?? "Unknown"}</h2>
+      <div className="flex items-center gap-3 flex-wrap">
+        {labelEdit === null ? (
+          <h2
+            className="text-xl font-bold text-gray-900 cursor-pointer hover:text-blue-600"
+            title="Click to rename"
+            onClick={() => setLabelEdit(node.label ?? "")}
+          >
+            {displayName}
+          </h2>
+        ) : (
+          <div className="flex items-center gap-1">
+            <input
+              autoFocus
+              value={labelEdit}
+              onChange={(e) => setLabelEdit(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") saveLabel(); if (e.key === "Escape") setLabelEdit(null); }}
+              className="text-xl font-bold rounded border border-blue-300 px-1 focus:outline-none focus:ring-2 focus:ring-blue-300 w-48"
+              placeholder={node.hostname ?? "Label"}
+            />
+            <button onClick={saveLabel} disabled={labelSaving} className="text-xs text-blue-600 px-2 py-1 hover:underline disabled:opacity-50">Save</button>
+            <button onClick={() => setLabelEdit(null)} className="text-xs text-gray-400 px-1 hover:text-gray-700">✕</button>
+          </div>
+        )}
+        {node.label && node.hostname && node.label !== node.hostname && (
+          <span className="text-sm text-gray-400 font-mono">{node.hostname}</span>
+        )}
         <span className={`text-xs font-medium ${dotColor}`}>● {node.online ? "online" : "offline"}</span>
         {node.last_errors.length > 0 && (
           <div className="flex gap-1 flex-wrap">
