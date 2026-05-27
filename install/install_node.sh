@@ -361,13 +361,31 @@ else
 fi
 
 # agent.json
-if [ ! -f /etc/bloxx/agent.json ]; then
+_needs_server_hash() {
+    # Returns 0 (true) if agent.json has no real server hash configured
+    "$PYTHON" - << 'PYEOF' 2>/dev/null
+import json, sys
+try:
+    cfg = json.load(open('/etc/bloxx/agent.json'))
+    hashes = [h for h in cfg.get('server_dest_hashes', [])
+              if h and h != 'PASTE_SERVER_DEST_HASH_HERE']
+    sys.exit(0 if not hashes else 1)
+except Exception:
+    sys.exit(0)
+PYEOF
+}
+
+_prompt_server_hash() {
     echo
     echo "  Open the RBloxx web UI, click '+ Add node' — the server"
     echo "  destination hash is shown at the top of that dialog."
     echo
     _ask "Server destination hash (leave blank to fill in later):" SERVER_HASH
     SERVER_HASH="${SERVER_HASH:-PASTE_SERVER_DEST_HASH_HERE}"
+}
+
+if [ ! -f /etc/bloxx/agent.json ]; then
+    _prompt_server_hash
 
     if [ -n "$RNODE_PORT" ]; then
         RNODE_PORTS_JSON="\"$RNODE_PORT\""
@@ -386,8 +404,24 @@ if [ ! -f /etc/bloxx/agent.json ]; then
 }
 EOF
     _ok "Created /etc/bloxx/agent.json"
+elif _needs_server_hash; then
+    _warn "agent.json has no server hash — let's fix that"
+    _prompt_server_hash
+    if [ "$SERVER_HASH" != "PASTE_SERVER_DEST_HASH_HERE" ]; then
+        "$PYTHON" - "$SERVER_HASH" << 'PYEOF'
+import json, sys
+path = '/etc/bloxx/agent.json'
+cfg = json.load(open(path))
+cfg['server_dest_hashes'] = [sys.argv[1]]
+json.dump(cfg, open(path, 'w'), indent=2)
+print()
+PYEOF
+        _ok "Updated server_dest_hashes in /etc/bloxx/agent.json"
+    else
+        _warn "Still no server hash — edit /etc/bloxx/agent.json manually and restart bloxx-agent"
+    fi
 else
-    _ok "/etc/bloxx/agent.json already exists"
+    _ok "/etc/bloxx/agent.json already configured"
 fi
 
 # bloxx-agent
