@@ -2,7 +2,14 @@ const BASE = "/api/v1";
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, options);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch { /* non-JSON body */ }
+    throw new Error(detail);
+  }
   return res.json();
 }
 

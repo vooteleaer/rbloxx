@@ -380,6 +380,7 @@ function UnknownCard({ iface }: { iface: RnsInterface }) {
 function RnsConfigTab({ destHash }: { destHash: string }) {
   const [rnsConfig, setRnsConfig] = useState<RnsConfig | null>(null);
   const [status, setStatus] = useState("");
+  const [noPath, setNoPath] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -389,6 +390,7 @@ function RnsConfigTab({ destHash }: { destHash: string }) {
 
   async function loadConfig(forceRefresh = false) {
     setStatus("");
+    setNoPath(false);
     try {
       let content: string;
       if (!forceRefresh) {
@@ -407,7 +409,11 @@ function RnsConfigTab({ destHash }: { destHash: string }) {
       }
       setRnsConfig(parseIni(content));
     } catch (e: any) {
-      setStatus(`Error: ${e.message}`);
+      if ((e.message as string).startsWith("no_path:")) {
+        setNoPath(true);
+      } else {
+        setStatus(`Error: ${e.message}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -475,6 +481,16 @@ function RnsConfigTab({ destHash }: { destHash: string }) {
   const lon = locationIface ? parseFloat(locationIface.fields.longitude!) : null;
 
   if (loading) return <p className="text-sm text-gray-400 p-4">Loading…</p>;
+
+  if (noPath) return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-2">
+      <p className="text-sm text-amber-800 font-medium">No path to node</p>
+      <p className="text-xs text-amber-700">The node may be offline or has not announced yet. If it just came online, wait a moment for its announce to propagate.</p>
+      <button onClick={() => { setLoading(true); loadConfig(true); }} className="text-xs px-3 py-1.5 rounded border border-amber-300 text-amber-800 hover:bg-amber-100">
+        Retry
+      </button>
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -553,12 +569,14 @@ function RnsConfigTab({ destHash }: { destHash: string }) {
 function AgentConfigTab({ destHash }: { destHash: string }) {
   const [cfg, setCfg] = useState<Record<string, any> | null>(null);
   const [status, setStatus] = useState("");
+  const [noPath, setNoPath] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => { setLoading(true); loadConfig(); }, [destHash]);
 
   async function loadConfig(forceRefresh = false) {
     setStatus("");
+    setNoPath(false);
     try {
       let content: string;
       if (!forceRefresh) {
@@ -577,7 +595,11 @@ function AgentConfigTab({ destHash }: { destHash: string }) {
       }
       setCfg(JSON.parse(content));
     } catch (e: any) {
-      setStatus(`Error: ${e.message}`);
+      if ((e.message as string).startsWith("no_path:")) {
+        setNoPath(true);
+      } else {
+        setStatus(`Error: ${e.message}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -616,6 +638,17 @@ function AgentConfigTab({ destHash }: { destHash: string }) {
   }
 
   if (loading) return <p className="text-sm text-gray-400 p-4">Loading…</p>;
+
+  if (noPath) return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-2">
+      <p className="text-sm text-amber-800 font-medium">No path to node</p>
+      <p className="text-xs text-amber-700">The node may be offline or has not announced yet. If it just came online, wait a moment for its announce to propagate.</p>
+      <button onClick={() => { setLoading(true); loadConfig(true); }} className="text-xs px-3 py-1.5 rounded border border-amber-300 text-amber-800 hover:bg-amber-100">
+        Retry
+      </button>
+    </div>
+  );
+
   if (!cfg) return <p className="text-sm text-gray-400 p-4">No config. <button onClick={() => loadConfig(true)} className="text-blue-600 underline">Pull from node</button></p>;
 
   const ListField = ({ k, label }: { k: string; label: string }) => (

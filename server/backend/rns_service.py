@@ -230,32 +230,44 @@ def send_command(node_dest_hash: str, cmd: dict, timeout: float = 60.0) -> dict:
 
     dest_hash = bytes.fromhex(node_dest_hash)
 
-    # In shared-instance mode, Transport.known_paths lives in the client process
-    # and is empty after restart until announces arrive. rnsd retains routing state
-    # across our restarts, so we use Identity.recall() (persisted to disk by rnsd)
-    # as the readiness check instead of has_path().
+    # Step 1 — resolve identity.
+    # In shared-instance mode, Identity.recall() reads rnsd's persisted store and
+    # works even right after server restart. has_path() reflects the client-process
+    # path table which is empty until announces arrive, so we don't use it here.
     identity = RNS.Identity.recall(dest_hash)
     if identity is None:
-        # Identity not yet seen; request path and wait for an announce to arrive.
         RNS.Transport.request_path(dest_hash)
-        deadline = time.time() + timeout / 2
+        deadline = time.time() + min(timeout / 2, 30)
         while identity is None and time.time() < deadline:
             time.sleep(2)
             identity = RNS.Identity.recall(dest_hash)
     if identity is None:
-        return {"ok": False, "error": "node identity unknown"}
+        return {"ok": False, "error": "no_path: node identity unknown — node has not announced yet"}
+
+    # Step 2 — ensure a routing path exists.
+    # After a server restart the client-side path table is empty even though rnsd
+    # may still have the path. request_path() broadcasts a path request; if the
+    # node is reachable it will respond with an announce and rnsd will populate
+    # the path table in both the daemon and this client process.
+    if not RNS.Transport.has_path(dest_hash):
+        RNS.Transport.request_path(dest_hash)
+        path_deadline = time.time() + 15
+        while not RNS.Transport.has_path(dest_hash) and time.time() < path_deadline:
+            time.sleep(1)
+        if not RNS.Transport.has_path(dest_hash):
+            return {"ok": False, "error": "no_path: node is offline or out of range"}
 
     try:
         node_dest = RNS.Destination(
             identity, RNS.Destination.OUT, RNS.Destination.SINGLE, APP_NAME, NODE_ASPECT,
         )
         link = RNS.Link(node_dest)
-        deadline = time.time() + timeout
-        while link.status != RNS.Link.ACTIVE and time.time() < deadline:
+        link_deadline = time.time() + min(timeout, 30)
+        while link.status != RNS.Link.ACTIVE and time.time() < link_deadline:
             time.sleep(0.1)
         if link.status != RNS.Link.ACTIVE:
             link.teardown()
-            return {"ok": False, "error": "link establishment timed out"}
+            return {"ok": False, "error": "no_path: link establishment timed out"}
 
         link.identify(_destination.identity)
         time.sleep(0.3)
