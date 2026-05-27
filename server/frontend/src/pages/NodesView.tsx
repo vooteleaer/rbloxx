@@ -13,6 +13,7 @@ export default function NodesView() {
   const [addName, setAddName] = useState("");
   const [addError, setAddError] = useState("");
   const [addBusy, setAddBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -176,11 +177,29 @@ export default function NodesView() {
                   <span className="flex-1 font-mono text-xs text-gray-800 break-all select-all">{serverDestHash}</span>
                   <button
                     type="button"
-                    onClick={() => navigator.clipboard.writeText(serverDestHash)}
-                    className="flex-shrink-0 text-xs text-gray-400 hover:text-gray-700 px-1.5 py-0.5 rounded hover:bg-gray-200"
-                    title="Copy"
+                    onClick={() => {
+                      const write = (text: string) => {
+                        if (navigator.clipboard) {
+                          navigator.clipboard.writeText(text);
+                        } else {
+                          const el = document.createElement("textarea");
+                          el.value = text;
+                          el.style.cssText = "position:fixed;opacity:0";
+                          document.body.appendChild(el);
+                          el.select();
+                          document.execCommand("copy");
+                          document.body.removeChild(el);
+                        }
+                      };
+                      write(serverDestHash);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    }}
+                    className="flex-shrink-0 text-xs px-1.5 py-0.5 rounded hover:bg-gray-200 transition-colors"
+                    style={{ color: copied ? "#16a34a" : undefined }}
+                    title="Copy to clipboard"
                   >
-                    Copy
+                    {copied ? "Copied!" : "Copy"}
                   </button>
                 </div>
               </div>
