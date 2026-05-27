@@ -28,9 +28,24 @@ if [ "${1}" = "--show-hash" ]; then
         echo "Identity not found at $IDENTITY_PATH — run the installer first."
         exit 1
     fi
-    PYTHON=$(command -v python3 || echo python3)
-    "$PYTHON" - << PYEOF 2>/dev/null
+    # Find a Python that has RNS (mirrors the main install detection)
+    PYTHON=$(command -v python3 2>/dev/null || echo python3)
+    if ! "$PYTHON" -c "import RNS" 2>/dev/null; then
+        [ -x /opt/rns-venv/bin/python3 ] && PYTHON=/opt/rns-venv/bin/python3
+    fi
+    if ! "$PYTHON" -c "import RNS" 2>/dev/null; then
+        _svc=$(systemctl cat rnsd.service 2>/dev/null \
+            | grep -m1 '^ExecStart=' | sed 's/^ExecStart=//' | awk '{print $1}')
+        if [ -n "$_svc" ] && "$_svc" -c "import RNS" 2>/dev/null; then
+            PYTHON="$_svc"
+        elif [ -n "$_svc" ]; then
+            _interp=$(head -1 "$_svc" 2>/dev/null | sed 's|^#!||;s| .*||')
+            [ -x "$_interp" ] && "$_interp" -c "import RNS" 2>/dev/null && PYTHON="$_interp"
+        fi
+    fi
+    "$PYTHON" - << PYEOF
 import RNS
+RNS.Reticulum(loglevel=0)
 identity = RNS.Identity.from_file('$IDENTITY_PATH')
 dest = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, 'bloxx', 'node')
 print(dest.hash.hex())
@@ -317,14 +332,7 @@ print("  [ok] Identity created  (hash: " + identity.hash.hex() + ")")
 PYEOF
 fi
 
-# Compute destination hash from identity (no running rnsd needed)
-DEST_HASH=$("$PYTHON" - << PYEOF 2>/dev/null || true
-import RNS
-identity = RNS.Identity.from_file('/etc/bloxx/identity')
-dest = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, 'bloxx', 'node')
-print(dest.hash.hex())
-PYEOF
-)
+# (DEST_HASH computed after rnsd starts in step 7)
 
 # ---------------------------------------------------------------------------
 # [6/7] Systemd services
@@ -414,10 +422,20 @@ systemctl daemon-reload
 systemctl enable rnsd        --quiet
 systemctl restart rnsd
 _ok "rnsd running"
-sleep 2
+sleep 3
 systemctl enable bloxx-agent --quiet
 systemctl restart bloxx-agent
 _ok "bloxx-agent running"
+
+# Compute destination hash now that rnsd shared instance is up
+DEST_HASH=$("$PYTHON" - << PYEOF 2>/dev/null || true
+import RNS
+RNS.Reticulum(loglevel=0)
+identity = RNS.Identity.from_file('/etc/bloxx/identity')
+dest = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, 'bloxx', 'node')
+print(dest.hash.hex())
+PYEOF
+)
 
 # ---------------------------------------------------------------------------
 # Done
