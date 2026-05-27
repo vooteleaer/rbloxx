@@ -60,28 +60,55 @@ fi
 # ---------------------------------------------------------------------------
 _step "[2/7] Installing Reticulum Network Stack..."
 
-# If rnsd is already in PATH, derive the Python from its shebang — it may live
-# in a venv (common on newer Debian/Ubuntu with externally-managed pip).
-_python_from_bin() {
+# Given a binary path, return the Python interpreter from its shebang
+_python_from_shebang() {
     local bin="$1"
-    local path
-    path=$(command -v "$bin" 2>/dev/null) || return 1
-    # Read shebang line
     local interp
-    interp=$(head -1 "$path" 2>/dev/null | sed 's|^#!||;s| .*||')
-    [ -x "$interp" ] && echo "$interp" && return
-    echo "$PYTHON"
+    interp=$(head -1 "$bin" 2>/dev/null | sed 's|^#!||;s| .*||')
+    [ -x "$interp" ] && echo "$interp"
 }
 
-if "$PYTHON" -c "import RNS" 2>/dev/null; then
-    _ok "RNS already installed  ($("$PYTHON" -c "import RNS; print(RNS.__version__)" 2>/dev/null))"
-elif command -v rnsd &>/dev/null; then
-    # rnsd exists but not importable with system python — find its venv python
-    _VENV_PYTHON=$(_python_from_bin rnsd)
-    if [ -n "$_VENV_PYTHON" ] && "$_VENV_PYTHON" -c "import RNS" 2>/dev/null; then
-        PYTHON="$_VENV_PYTHON"
-        _ok "RNS found via existing rnsd venv — using $PYTHON"
+# Try to find Python that already has RNS — check in priority order:
+#   1. system python3 directly
+#   2. ExecStart of existing rnsd.service (handles venv installs with systemd)
+#   3. rnsd binary in PATH (shebang)
+_find_rns_python() {
+    # 1. system python already works
+    "$PYTHON" -c "import RNS" 2>/dev/null && echo "$PYTHON" && return
+
+    # 2. existing rnsd.service — extract the executable from ExecStart
+    local svc_exec
+    svc_exec=$(systemctl cat rnsd.service 2>/dev/null \
+        | grep -m1 '^ExecStart=' | sed 's/^ExecStart=//' | awk '{print $1}')
+    if [ -n "$svc_exec" ] && [ -x "$svc_exec" ]; then
+        # ExecStart might be rnsd directly or a python interpreter
+        local candidate
+        if "$svc_exec" -c "import RNS" 2>/dev/null; then
+            echo "$svc_exec" && return       # ExecStart is the python binary
+        fi
+        candidate=$(_python_from_shebang "$svc_exec")
+        if [ -n "$candidate" ] && "$candidate" -c "import RNS" 2>/dev/null; then
+            echo "$candidate" && return      # shebang in the rnsd script
+        fi
     fi
+
+    # 3. rnsd in PATH
+    local rnsd_path
+    rnsd_path=$(command -v rnsd 2>/dev/null)
+    if [ -n "$rnsd_path" ]; then
+        local candidate
+        candidate=$(_python_from_shebang "$rnsd_path")
+        if [ -n "$candidate" ] && "$candidate" -c "import RNS" 2>/dev/null; then
+            echo "$candidate" && return
+        fi
+    fi
+}
+
+_RNS_PYTHON=$(_find_rns_python)
+
+if [ -n "$_RNS_PYTHON" ]; then
+    PYTHON="$_RNS_PYTHON"
+    _ok "RNS already installed  ($("$PYTHON" -c "import RNS; print(RNS.__version__)" 2>/dev/null))  [$PYTHON]"
 else
     # Try to install — handle externally-managed-environment (PEP 668)
     _pip_install() {
