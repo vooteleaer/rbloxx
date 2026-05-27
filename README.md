@@ -14,7 +14,7 @@ The server image is published to Docker Hub. You only need the `docker-compose.y
 
 ```bash
 # Download just the compose file
-curl -O https://raw.githubusercontent.com/YOUR_USERNAME/rbloxx/main/server/docker-compose.yml
+curl -O https://raw.githubusercontent.com/vooteleaer/rbloxx/main/server/docker-compose.yml
 
 # Start (pulls image automatically)
 docker compose up -d
@@ -35,7 +35,7 @@ Open `http://server-ip:8200` in a browser.
 Run on each device you want to manage (Raspberry Pi or any Linux machine with Python 3):
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/rbloxx
+git clone https://github.com/vooteleaer/rbloxx
 cd rbloxx
 sudo bash install/install_node.sh
 ```
