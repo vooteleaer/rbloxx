@@ -181,18 +181,32 @@ class BloxxAgent:
     def _get_rns_stats(self) -> dict:
         try:
             stats = self._rns.get_interface_stats()
+            ifaces = stats.get("interfaces", [])
+
+            # Top-level rxb/txb may not exist in shared-instance client mode —
+            # fall back to summing per-interface counters.
+            def _sum(key):
+                v = stats.get(key)
+                if v is not None:
+                    return v
+                vals = [i.get(key) for i in ifaces if i.get(key) is not None]
+                return sum(vals) if vals else None
+
             result: dict = {
-                "rns_rxb": stats.get("rxb"),
-                "rns_txb": stats.get("txb"),
-                "rns_rxs": stats.get("rxs"),
-                "rns_txs": stats.get("txs"),
+                "rns_rxb": _sum("rxb"),
+                "rns_txb": _sum("txb"),
+                "rns_rxs": _sum("rxs"),
+                "rns_txs": _sum("txs"),
                 "interfaces": [
                     {"name": i.get("name"), "rxb": i.get("rxb"), "txb": i.get("txb")}
-                    for i in stats.get("interfaces", [])
+                    for i in ifaces
                 ],
             }
-            for iface in stats.get("interfaces", []):
-                if iface.get("type") == "RNodeInterface":
+
+            for iface in ifaces:
+                # Type field may be the short class name or the full dotted path
+                itype = iface.get("type") or ""
+                if "RNodeInterface" in itype:
                     result["rnode_airtime_short"]      = iface.get("airtime_short")
                     result["rnode_airtime_long"]        = iface.get("airtime_long")
                     result["rnode_channel_load_short"]  = iface.get("channel_load_short")
@@ -204,6 +218,7 @@ class BloxxAgent:
                     result["rnode_announce_out"]        = iface.get("outgoing_announce_frequency")
                     result["rnode_held_announces"]      = iface.get("held_announces")
                     break
+
             return result
         except Exception:
             return {
