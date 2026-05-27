@@ -59,26 +59,65 @@ fi
 # [2/7] Reticulum (RNS + rnodeconf)
 # ---------------------------------------------------------------------------
 _step "[2/7] Installing Reticulum Network Stack..."
+
+# If rnsd is already in PATH, derive the Python from its shebang — it may live
+# in a venv (common on newer Debian/Ubuntu with externally-managed pip).
+_python_from_bin() {
+    local bin="$1"
+    local path
+    path=$(command -v "$bin" 2>/dev/null) || return 1
+    # Read shebang line
+    local interp
+    interp=$(head -1 "$path" 2>/dev/null | sed 's|^#!||;s| .*||')
+    [ -x "$interp" ] && echo "$interp" && return
+    echo "$PYTHON"
+}
+
 if "$PYTHON" -c "import RNS" 2>/dev/null; then
     _ok "RNS already installed  ($("$PYTHON" -c "import RNS; print(RNS.__version__)" 2>/dev/null))"
+elif command -v rnsd &>/dev/null; then
+    # rnsd exists but not importable with system python — find its venv python
+    _VENV_PYTHON=$(_python_from_bin rnsd)
+    if [ -n "$_VENV_PYTHON" ] && "$_VENV_PYTHON" -c "import RNS" 2>/dev/null; then
+        PYTHON="$_VENV_PYTHON"
+        _ok "RNS found via existing rnsd venv — using $PYTHON"
+    fi
 else
-    "$PYTHON" -m pip install --quiet rns
-    _ok "RNS installed"
+    # Try to install — handle externally-managed-environment (PEP 668)
+    _pip_install() {
+        "$PYTHON" -m pip install --quiet "$@" 2>/dev/null && return 0
+        "$PYTHON" -m pip install --quiet --break-system-packages "$@" 2>/dev/null && return 0
+        return 1
+    }
+    if _pip_install rns; then
+        _ok "RNS installed"
+    else
+        # Fall back: create a venv and install there
+        _warn "pip install failed (externally managed env) — creating venv at /opt/rns-venv"
+        apt-get install -y -qq python3-venv 2>/dev/null || true
+        python3 -m venv /opt/rns-venv
+        PYTHON=/opt/rns-venv/bin/python3
+        "$PYTHON" -m pip install --quiet rns
+        _ok "RNS installed in /opt/rns-venv"
+    fi
 fi
 
-# Optional: smbus2 for I²C battery monitoring (INA226/INA219)
+# Optional: smbus2 for I²C battery monitoring
 if ! "$PYTHON" -c "import smbus2" 2>/dev/null; then
     "$PYTHON" -m pip install --quiet smbus2 2>/dev/null \
+        || "$PYTHON" -m pip install --quiet --break-system-packages smbus2 2>/dev/null \
         || _warn "smbus2 install failed — I²C battery monitoring unavailable"
 fi
 
-# Locate binaries installed by pip
+# Locate binaries — prefer ones that match our chosen $PYTHON's venv
 _find_bin() {
     local name="$1"
     local found
+    # Check venv bin dir first (same dir as $PYTHON)
+    local venv_bin
+    venv_bin="$(dirname "$PYTHON")/$name"
+    [ -x "$venv_bin" ] && { echo "$venv_bin"; return; }
     found=$(command -v "$name" 2>/dev/null) && { echo "$found"; return; }
-    found=$("$PYTHON" -c "import shutil; r=shutil.which('$name'); print(r or '')" 2>/dev/null)
-    [ -n "$found" ] && { echo "$found"; return; }
     "$PYTHON" -c "import sysconfig; print(sysconfig.get_path('scripts')+'/$name')" 2>/dev/null \
         || echo "$name"
 }
