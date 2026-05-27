@@ -167,9 +167,28 @@ export default function NodesView() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
           <div className="bg-white rounded-xl shadow-xl p-5 w-80 space-y-3">
             <h3 className="text-sm font-semibold text-gray-800">Add node</h3>
+
+            {/* Server hash — paste this into agent.json on the node */}
+            {serverDestHash && (
+              <div className="rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 space-y-1">
+                <p className="text-xs text-gray-500">Server destination hash — paste into <span className="font-mono">agent.json</span> on the node:</p>
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 font-mono text-xs text-gray-800 break-all select-all">{serverDestHash}</span>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard.writeText(serverDestHash)}
+                    className="flex-shrink-0 text-xs text-gray-400 hover:text-gray-700 px-1.5 py-0.5 rounded hover:bg-gray-200"
+                    title="Copy"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+            )}
+
             <form onSubmit={submitAddNode} className="space-y-3">
               <div>
-                <label className="text-xs text-gray-500 block mb-1">Destination hash</label>
+                <label className="text-xs text-gray-500 block mb-1">Node destination hash</label>
                 <input
                   autoFocus
                   value={addHash}
@@ -178,7 +197,7 @@ export default function NodesView() {
                   placeholder="e.g. a3f1b2c4d5e6…"
                   spellCheck={false}
                 />
-                <p className="mt-1 text-xs text-gray-400">The RNS destination hash from the node agent log.</p>
+                <p className="mt-1 text-xs text-gray-400">Printed at the end of <span className="font-mono">install_node.sh</span>, or run it with <span className="font-mono">--show-hash</span>.</p>
               </div>
               <div>
                 <label className="text-xs text-gray-500 block mb-1">Name (optional)</label>
