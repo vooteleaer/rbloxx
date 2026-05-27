@@ -755,11 +755,12 @@ interface Props {
   destHash: string;
   node: Node;
   onDelete(): void;
+  liveTelemetry?: Record<string, unknown>;
 }
 
 type Tab = "rns" | "agent";
 
-export default function NodePanel({ destHash, node, onDelete }: Props) {
+export default function NodePanel({ destHash, node, onDelete, liveTelemetry }: Props) {
   const [telemetry, setTelemetry] = useState<TelemetryRow[]>([]);
   const [tab, setTab] = useState<Tab>("rns");
   const [labelEdit, setLabelEdit] = useState<string | null>(null);
@@ -768,6 +769,13 @@ export default function NodePanel({ destHash, node, onDelete }: Props) {
   useEffect(() => {
     api.nodes.telemetry(destHash, 60).then(setTelemetry).catch(() => {});
   }, [destHash]);
+
+  // Prepend live WS telemetry to sparkline data
+  useEffect(() => {
+    if (!liveTelemetry) return;
+    const row = liveTelemetry as unknown as TelemetryRow;
+    setTelemetry((prev) => [row, ...prev].slice(0, 60));
+  }, [liveTelemetry]);
 
   async function handleDelete() {
     if (!window.confirm("Delete this node and all its telemetry? This cannot be undone.")) return;

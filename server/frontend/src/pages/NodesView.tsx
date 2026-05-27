@@ -8,6 +8,7 @@ export default function NodesView() {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [serverDestHash, setServerDestHash] = useState<string>("");
+  const [liveTelemetry, setLiveTelemetry] = useState<Record<string, Record<string, unknown>>>({});
   const [showAddModal, setShowAddModal] = useState(false);
   const [addHash, setAddHash] = useState("");
   const [addName, setAddName] = useState("");
@@ -42,15 +43,47 @@ export default function NodesView() {
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
-        if (msg.type === "node_update" && msg.data) {
+        const hash: string = msg.dest_hash;
+        if (!hash) return;
+
+        if (msg.type === "telemetry" && msg.data) {
+          const d = msg.data;
+          setLiveTelemetry((prev) => ({ ...prev, [hash]: d }));
           setNodes((prev) => {
-            const idx = prev.findIndex((n) => n.dest_hash === msg.data.dest_hash);
+            const idx = prev.findIndex((n) => n.dest_hash === hash);
+            const patch = {
+              hostname: d.hostname ?? undefined,
+              version: d.version ?? undefined,
+              last_errors: Array.isArray(d.errors) ? d.errors : [],
+              last_seen: Date.now() / 1000,
+              online: true,
+            };
             if (idx >= 0) {
               const next = [...prev];
-              next[idx] = { ...next[idx], ...msg.data };
+              next[idx] = { ...next[idx], ...patch };
               return next;
             }
-            return [...prev, msg.data];
+            return prev;
+          });
+        }
+
+        if (msg.type === "announce" && msg.data) {
+          const d = msg.data;
+          setNodes((prev) => {
+            const idx = prev.findIndex((n) => n.dest_hash === hash);
+            const patch = {
+              hostname: d.hostname ?? undefined,
+              version: d.version ?? undefined,
+              identity_hash: d.identity_hash ?? undefined,
+              last_seen: Date.now() / 1000,
+              online: true,
+            };
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = { ...next[idx], ...patch };
+              return next;
+            }
+            return prev;
           });
         }
       } catch {
@@ -263,6 +296,7 @@ export default function NodesView() {
             destHash={singleSelected!}
             node={selectedNode}
             onDelete={() => handleDelete(singleSelected!)}
+            liveTelemetry={liveTelemetry[singleSelected!]}
           />
         )}
         {selectedArray.length > 1 && (
