@@ -19,7 +19,7 @@ import RNS
 sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
 from protocol import (
     APP_NAME, NODE_ASPECT, SERVER_ASPECT, VERSION,
-    PATH_CMD, PATH_TELEMETRY, PATH_TIME,
+    PATH_CMD, PATH_TELEMETRY, PATH_CONFIG, PATH_TIME,
     CMD_GET_CONFIG, CMD_PUT_CONFIG, CMD_PATCH_CONFIG,
     CMD_SVC_RESTART, CMD_SVC_STOP, CMD_SVC_START,
     CMD_WIFI_SET, CMD_LOG_PULL, CMD_REBOOT, CMD_SHUTDOWN,
@@ -114,9 +114,11 @@ class BloxxAgent:
         self._check_pending_rollback()
         self._wait_for_server_path()
         self._time_sync()
+        first = True
         while self._running:
             self._announce()
-            self._push_telemetry_all()
+            self._push_telemetry_all(include_configs=first)
+            first = False
             if time.time() - self._last_time_sync >= self.time_sync_interval:
                 self._wait_for_server_path()
                 self._time_sync()
@@ -157,10 +159,11 @@ class BloxxAgent:
         )
         self._dest.announce(app_data=app_data)
 
-    def _push_telemetry_all(self) -> None:
+    def _push_telemetry_all(self, include_configs: bool = False) -> None:
         telemetry = self._collect_telemetry()
         for dest_hash_hex in self.server_dest_hashes:
-            self._push_to_server(dest_hash_hex, PATH_TELEMETRY, telemetry)
+            self._push_to_server(dest_hash_hex, PATH_TELEMETRY, telemetry,
+                                 extra_pushes=self._config_payloads() if include_configs else [])
 
     def _collect_telemetry(self) -> dict:
         sys_info = self.system_handler.collect()
@@ -309,27 +312,42 @@ class BloxxAgent:
             RNS.log(f"Link error to {dest_hash_hex}: {e}", RNS.LOG_WARNING)
             return None
 
-    def _push_to_server(self, dest_hash_hex: str, path: str, data: dict) -> bool:
+    def _config_payloads(self) -> list[tuple[str, dict]]:
+        """Return (path, payload) pairs for RNS and agent configs to push."""
+        payloads = []
+        for cfg_type in ("rns", "agent"):
+            try:
+                content = self.config_handler.get_config(cfg_type)
+                payloads.append((PATH_CONFIG, {"type": cfg_type, "content": content}))
+            except Exception as e:
+                RNS.log(f"Config read failed for {cfg_type}: {e}", RNS.LOG_WARNING)
+        return payloads
+
+    def _link_request(self, link: RNS.Link, path: str, data: dict, timeout: float = 30) -> bool:
+        """Send a single request on an already-active link. Returns True on response."""
+        done = threading.Event()
+
+        def _resp(receipt): done.set()
+        def _fail(receipt): done.set()
+
+        link.request(
+            path,
+            data=msgpack.packb(data, use_bin_type=True),
+            response_callback=_resp,
+            failed_callback=_fail,
+            timeout=timeout,
+        )
+        return done.wait(timeout=timeout + 5)
+
+    def _push_to_server(self, dest_hash_hex: str, path: str, data: dict,
+                        extra_pushes: list[tuple[str, dict]] | None = None) -> bool:
         link = self._open_link_to_server(dest_hash_hex)
         if link is None:
             return False
         try:
-            done = threading.Event()
-
-            def _resp(receipt):
-                done.set()
-
-            def _fail(receipt):
-                done.set()
-
-            link.request(
-                path,
-                data=msgpack.packb(data, use_bin_type=True),
-                response_callback=_resp,
-                failed_callback=_fail,
-                timeout=30,
-            )
-            done.wait(timeout=35)
+            self._link_request(link, path, data)
+            for extra_path, extra_data in (extra_pushes or []):
+                self._link_request(link, extra_path, extra_data)
             return True
         except Exception as e:
             RNS.log(f"Request error to {dest_hash_hex}{path}: {e}", RNS.LOG_WARNING)

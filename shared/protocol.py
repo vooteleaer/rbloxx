@@ -8,6 +8,7 @@ VERSION = "0.1.0"
 # RNS request handler paths
 PATH_CMD = "/cmd"
 PATH_TELEMETRY = "/telemetry"
+PATH_CONFIG = "/config"
 PATH_TIME = "/time"
 
 # Command names

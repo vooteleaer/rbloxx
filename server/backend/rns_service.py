@@ -24,7 +24,7 @@ if hasattr(RNS.Reticulum, "_used_destination_data"):
     RNS.Reticulum._used_destination_data = _rns_safe_udd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "shared"))
-from protocol import APP_NAME, SERVER_ASPECT, NODE_ASPECT, PATH_TELEMETRY, PATH_TIME, VERSION
+from protocol import APP_NAME, SERVER_ASPECT, NODE_ASPECT, PATH_TELEMETRY, PATH_CONFIG, PATH_TIME, VERSION
 
 import node_registry
 
@@ -64,6 +64,13 @@ def init(
     _destination.register_request_handler(
         PATH_TELEMETRY,
         response_generator=_handle_telemetry,
+        allow=RNS.Destination.ALLOW_ALL,
+    )
+
+    # Handle config pushes from nodes (node → server on startup)
+    _destination.register_request_handler(
+        PATH_CONFIG,
+        response_generator=_handle_config_push,
         allow=RNS.Destination.ALLOW_ALL,
     )
 
@@ -166,6 +173,32 @@ async def _store_telemetry(dest_hash: str, payload: dict) -> None:
 def _dest_hash_for_identity(identity: RNS.Identity) -> str:
     dest = RNS.Destination(identity, RNS.Destination.OUT, RNS.Destination.SINGLE, APP_NAME, NODE_ASPECT)
     return dest.hash.hex()
+
+
+# ------------------------------------------------------------------
+# Config push handler (node pushes config to server on startup)
+# ------------------------------------------------------------------
+
+def _handle_config_push(path, data, request_id, remote_identity, requested_at):
+    try:
+        payload = msgpack.unpackb(data, raw=False)
+    except Exception:
+        return msgpack.packb({"ok": False, "error": "bad payload"}, use_bin_type=True)
+
+    if remote_identity is None:
+        return msgpack.packb({"ok": False, "error": "no identity"}, use_bin_type=True)
+
+    dest_hash = _dest_hash_for_identity(remote_identity)
+    cfg_type = payload.get("type")
+    content = payload.get("content")
+
+    if cfg_type and isinstance(content, str) and content:
+        if _loop:
+            asyncio.run_coroutine_threadsafe(
+                node_registry.save_config_snapshot(dest_hash, cfg_type, content), _loop
+            )
+
+    return msgpack.packb({"ok": True}, use_bin_type=True)
 
 
 # ------------------------------------------------------------------
