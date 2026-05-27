@@ -3,6 +3,7 @@ services:
     image: vooteleaer/rbloxx-server:latest
     restart: unless-stopped
     network_mode: host
+    hostname: server
     devices:
       # Heltec LoRa V3 RNode (CP2102)
       - /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0:/dev/ttyACM0

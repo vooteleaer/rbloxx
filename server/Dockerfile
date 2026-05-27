@@ -28,6 +28,9 @@ RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 # sys.path.insert(0, ...parent.parent.parent/shared) resolves correctly)
 COPY shared/ /app/shared/
 
+# Copy node agent (runs inside container as the local "Server" node)
+COPY node/ /app/node/
+
 # Copy backend source
 COPY server/backend/ ./
 
