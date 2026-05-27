@@ -120,9 +120,9 @@ async def upsert_node(dest_hash: str, data: dict, db_path: str = DB_PATH) -> Non
             INSERT INTO nodes (dest_hash, identity_hash, hostname, version, first_seen, last_seen, last_errors)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(dest_hash) DO UPDATE SET
-                identity_hash = excluded.identity_hash,
-                hostname      = excluded.hostname,
-                version       = excluded.version,
+                identity_hash = COALESCE(excluded.identity_hash, identity_hash),
+                hostname      = COALESCE(excluded.hostname, hostname),
+                version       = COALESCE(excluded.version, version),
                 last_seen     = excluded.last_seen,
                 last_errors   = excluded.last_errors
         """, (

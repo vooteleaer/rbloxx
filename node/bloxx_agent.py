@@ -326,14 +326,30 @@ class BloxxAgent:
     # Incoming command handler
     # ------------------------------------------------------------------
 
+    def _is_trusted_server(self, identity: RNS.Identity) -> bool:
+        # Primary: recompute the server destination hash from the identity and
+        # confirm it matches a hash we were configured to talk to.  This works
+        # even before the first telemetry push (no bootstrap race).
+        if self.server_dest_hashes:
+            try:
+                candidate = RNS.Destination(
+                    identity, RNS.Destination.OUT, RNS.Destination.SINGLE,
+                    APP_NAME, SERVER_ASPECT,
+                )
+                if candidate.hash.hex() in self.server_dest_hashes:
+                    return True
+            except Exception:
+                pass
+        # Fallback: identity hashes cached from outbound links or pre-configured
+        # in trusted_server_identities.
+        with self._trusted_lock:
+            return identity.hash.hex() in self._trusted
+
     def _handle_cmd(self, path, data, request_id, remote_identity, requested_at):
         if remote_identity is None:
             return msgpack.packb({"ok": False, "error": "no identity"}, use_bin_type=True)
 
-        with self._trusted_lock:
-            trusted = remote_identity.hash.hex() in self._trusted
-
-        if not trusted:
+        if not self._is_trusted_server(remote_identity):
             RNS.log(
                 f"Rejected command from untrusted identity {remote_identity.hash.hex()}",
                 RNS.LOG_WARNING,
