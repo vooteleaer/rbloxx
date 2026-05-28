@@ -19,13 +19,8 @@ import RNS
 sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
 from protocol import (
     APP_NAME, NODE_ASPECT, SERVER_ASPECT, VERSION,
-    PATH_CMD, PATH_TELEMETRY, PATH_CONFIG, PATH_TIME,
-    CMD_GET_CONFIG, CMD_PUT_CONFIG, CMD_PATCH_CONFIG,
-    CMD_SVC_RESTART, CMD_SVC_STOP, CMD_SVC_START,
-    CMD_WIFI_SET, CMD_LOG_PULL, CMD_REBOOT, CMD_SHUTDOWN,
-    CMD_RNODE_RESET, CMD_RNODE_UPDATE, CMD_RNS_ANNOUNCE,
-    CMD_DISK_CLEANUP, CMD_CONNECTIVITY_CHECK, CMD_AGENT_UPDATE,
-    CMD_SHUTDOWN_THRESHOLD,
+    PKT_TELEMETRY, PKT_RTELEMETRY, PKT_CONFIG, PKT_CMD, PKT_RESULT,
+    CHUNK_SIZE,
 )
 from config_handler import ConfigHandler
 from system_handler import SystemHandler
@@ -37,14 +32,12 @@ class BloxxAgent:
         self.cfg = self._load_config(config_path)
         self.identity_path = Path(self.cfg.get("identity_path", "/etc/bloxx/identity"))
         self.announce_interval: int = self.cfg.get("announce_interval", 300)
-        self.time_sync_interval: int = self.cfg.get("time_sync_interval", 43200)  # 12h default
         self.server_dest_hashes: list[str] = self.cfg.get("server_dest_hashes", [])
         self.shutdown_soc_pct: float = self.cfg.get("shutdown_soc_pct", 0)
-        self._last_time_sync: float = 0
 
-        # Trusted server identity hashes; auto-populated when we successfully push telemetry
-        self._trusted: set[str] = set(self.cfg.get("trusted_server_identities", []))
-        self._trusted_lock = threading.Lock()
+        # Reassembly buffer for chunked incoming commands keyed by command id
+        self._cmd_chunks: dict[str, dict] = {}
+        self._cmd_chunks_lock = threading.Lock()
 
         self.config_handler = ConfigHandler(self.cfg, config_path=config_path)
         self.system_handler = SystemHandler(self.cfg)
@@ -69,11 +62,8 @@ class BloxxAgent:
             APP_NAME,
             NODE_ASPECT,
         )
-        self._dest.register_request_handler(
-            PATH_CMD,
-            response_generator=self._handle_cmd,
-            allow=RNS.Destination.ALLOW_ALL,
-        )
+        # Receive plain packets from the server (commands)
+        self._dest.set_packet_callback(self._handle_incoming_packet)
 
         self._running = True
         threading.Thread(target=self._watchdog_loop, daemon=True, name="watchdog").start()
@@ -112,38 +102,30 @@ class BloxxAgent:
 
     def _main_loop(self) -> None:
         self._check_pending_rollback()
-        self._wait_for_server_path()
-        self._time_sync()
+        self._wait_for_server_identity()
         first = True
         while self._running:
             self._announce()
             self._push_telemetry_all(include_configs=first)
             first = False
-            if time.time() - self._last_time_sync >= self.time_sync_interval:
-                self._wait_for_server_path()
-                self._time_sync()
             self._check_auto_shutdown()
             self._sleep_interruptible(self.announce_interval)
 
-    def _wait_for_server_path(self) -> None:
-        """Block until a path to at least one server is known."""
+    def _wait_for_server_identity(self) -> None:
+        """Block until we can recall at least one server's identity (needed to send packets)."""
         if not self.server_dest_hashes:
             return
         while self._running:
-            for dest_hash_hex in self.server_dest_hashes:
-                dest_hash = bytes.fromhex(dest_hash_hex)
-                # In shared-instance mode, Transport.known_paths is empty in the
-                # client process. Use Identity.recall() (from rnsd's persistent
-                # storage) instead of has_path() to detect when the server is known.
-                if RNS.Identity.recall(dest_hash) is not None:
+            for h in self.server_dest_hashes:
+                if RNS.Identity.recall(bytes.fromhex(h)) is not None:
                     return
-                RNS.Transport.request_path(dest_hash)
+                RNS.Transport.request_path(bytes.fromhex(h))
             for _ in range(30):
                 if not self._running:
                     return
-                for dest_hash_hex in self.server_dest_hashes:
-                    if RNS.Identity.recall(bytes.fromhex(dest_hash_hex)) is not None:
-                        return
+                if any(RNS.Identity.recall(bytes.fromhex(h)) is not None
+                       for h in self.server_dest_hashes):
+                    return
                 time.sleep(1)
 
     def _sleep_interruptible(self, seconds: int) -> None:
@@ -160,26 +142,49 @@ class BloxxAgent:
         self._dest.announce(app_data=app_data)
 
     def _push_telemetry_all(self, include_configs: bool = False) -> None:
-        telemetry = self._collect_telemetry()
+        sys_tel, rnode_tel = self._collect_telemetry()
         for dest_hash_hex in self.server_dest_hashes:
-            self._push_to_server(dest_hash_hex, PATH_TELEMETRY, telemetry,
-                                 extra_pushes=self._config_payloads() if include_configs else [])
+            self._send_packet(dest_hash_hex, {
+                "t": PKT_TELEMETRY, "h": self._dest.hash.hex(), "d": sys_tel,
+            })
+            if rnode_tel:
+                self._send_packet(dest_hash_hex, {
+                    "t": PKT_RTELEMETRY, "h": self._dest.hash.hex(), "d": rnode_tel,
+                })
+            if include_configs:
+                self._push_configs(dest_hash_hex)
 
-    def _collect_telemetry(self) -> dict:
+    def _collect_telemetry(self) -> tuple[dict, dict | None]:
+        """Return (system_telemetry, rnode_telemetry). rnode_telemetry is None if no RNode data."""
         sys_info = self.system_handler.collect()
         power_info = self.power_handler.collect()
         rns_stats = self._get_rns_stats()
         errors = self.system_handler.get_errors() + self.power_handler.get_errors()
-        return {
+
+        rnode_keys = {
+            "rnode_airtime_short", "rnode_airtime_long",
+            "rnode_channel_load_short", "rnode_channel_load_long",
+            "rnode_noise_floor", "rnode_interference_dbm",
+            "rnode_bitrate", "rnode_announce_in", "rnode_announce_out",
+            "rnode_held_announces",
+        }
+        rnode_tel = {k: v for k, v in rns_stats.items() if k in rnode_keys and v is not None}
+
+        sys_tel = {
             "hostname": socket.gethostname(),
             "version": VERSION,
             "timestamp": int(time.time()),
             **sys_info,
             **power_info,
-            **rns_stats,
+            "rns_rxb": rns_stats.get("rns_rxb"),
+            "rns_txb": rns_stats.get("rns_txb"),
+            "rns_rxs": rns_stats.get("rns_rxs"),
+            "rns_txs": rns_stats.get("rns_txs"),
             "topology": self._get_topology(),
             "errors": errors,
         }
+
+        return sys_tel, rnode_tel if rnode_tel else None
 
     def _get_rns_stats(self) -> dict:
         try:
@@ -270,132 +275,112 @@ class BloxxAgent:
         return {"paths": paths}
 
     # ------------------------------------------------------------------
-    # RNS link helpers
+    # Plain-packet transport
     # ------------------------------------------------------------------
 
-    def _open_link_to_server(self, dest_hash_hex: str, timeout: float = 60.0) -> RNS.Link | None:
-        dest_hash = bytes.fromhex(dest_hash_hex)
-        # In shared-instance mode, Transport.known_paths is empty in the client process.
-        # Use Identity.recall() (persisted by rnsd) as the readiness check instead.
-        identity = RNS.Identity.recall(dest_hash)
+    def _server_dest(self, dest_hash_hex: str) -> RNS.Destination | None:
+        identity = RNS.Identity.recall(bytes.fromhex(dest_hash_hex))
         if identity is None:
-            RNS.Transport.request_path(dest_hash)
-            deadline = time.time() + timeout / 2
-            while identity is None and time.time() < deadline:
-                time.sleep(2)
-                identity = RNS.Identity.recall(dest_hash)
-        if identity is None:
-            RNS.log(f"Cannot recall identity for {dest_hash_hex}", RNS.LOG_WARNING)
             return None
-        try:
-            server_dest = RNS.Destination(
-                identity, RNS.Destination.OUT, RNS.Destination.SINGLE,
-                APP_NAME, SERVER_ASPECT,
-            )
-            link = RNS.Link(server_dest)
-            deadline = time.time() + timeout / 2
-            while link.status != RNS.Link.ACTIVE and time.time() < deadline:
-                time.sleep(0.1)
-            if link.status != RNS.Link.ACTIVE:
-                link.teardown()
-                return None
-            # Identify ourselves so the server can attribute telemetry/requests
-            link.identify(self._dest.identity)
-            time.sleep(0.2)
-            # Cache the server's identity hash for inbound auth
-            remote_id = link.get_remote_identity()
-            if remote_id:
-                with self._trusted_lock:
-                    self._trusted.add(remote_id.hash.hex())
-            return link
-        except Exception as e:
-            RNS.log(f"Link error to {dest_hash_hex}: {e}", RNS.LOG_WARNING)
-            return None
+        return RNS.Destination(
+            identity, RNS.Destination.OUT, RNS.Destination.SINGLE, APP_NAME, SERVER_ASPECT,
+        )
 
-    def _config_payloads(self) -> list[tuple[str, dict]]:
-        """Return (path, payload) pairs for RNS and agent configs to push."""
-        payloads = []
+    def _send_packet(self, dest_hash_hex: str, data: dict) -> bool:
+        server_dest = self._server_dest(dest_hash_hex)
+        if server_dest is None:
+            return False
+        try:
+            payload = msgpack.packb(data, use_bin_type=True)
+            receipt = RNS.Packet(server_dest, payload, create_receipt=False).send()
+            return receipt is not False
+        except Exception as e:
+            RNS.log(f"Packet send error to {dest_hash_hex}: {e}", RNS.LOG_DEBUG)
+            return False
+
+    def _push_configs(self, dest_hash_hex: str) -> None:
         for cfg_type in ("rns", "agent"):
             try:
                 content = self.config_handler.get_config(cfg_type)
-                payloads.append((PATH_CONFIG, {"type": cfg_type, "content": content}))
+                encoded = content.encode("utf-8")
+                chunks = [encoded[i:i + CHUNK_SIZE] for i in range(0, len(encoded), CHUNK_SIZE)]
+                for i, chunk in enumerate(chunks):
+                    self._send_packet(dest_hash_hex, {
+                        "t": PKT_CONFIG,
+                        "h": self._dest.hash.hex(),
+                        "ct": cfg_type,
+                        "i": i,
+                        "n": len(chunks),
+                        "c": chunk.decode("utf-8"),
+                    })
             except Exception as e:
-                RNS.log(f"Config read failed for {cfg_type}: {e}", RNS.LOG_WARNING)
-        return payloads
-
-    def _link_request(self, link: RNS.Link, path: str, data: dict, timeout: float = 30) -> bool:
-        """Send a single request on an already-active link. Returns True on response."""
-        done = threading.Event()
-
-        def _resp(receipt): done.set()
-        def _fail(receipt): done.set()
-
-        link.request(
-            path,
-            data=msgpack.packb(data, use_bin_type=True),
-            response_callback=_resp,
-            failed_callback=_fail,
-            timeout=timeout,
-        )
-        return done.wait(timeout=timeout + 5)
-
-    def _push_to_server(self, dest_hash_hex: str, path: str, data: dict,
-                        extra_pushes: list[tuple[str, dict]] | None = None) -> bool:
-        link = self._open_link_to_server(dest_hash_hex)
-        if link is None:
-            return False
-        try:
-            self._link_request(link, path, data)
-            for extra_path, extra_data in (extra_pushes or []):
-                self._link_request(link, extra_path, extra_data)
-            return True
-        except Exception as e:
-            RNS.log(f"Request error to {dest_hash_hex}{path}: {e}", RNS.LOG_WARNING)
-            return False
-        finally:
-            link.teardown()
+                RNS.log(f"Config push failed for {cfg_type}: {e}", RNS.LOG_WARNING)
 
     # ------------------------------------------------------------------
-    # Incoming command handler
+    # Incoming packet handler (commands from server)
     # ------------------------------------------------------------------
 
-    def _is_trusted_server(self, identity: RNS.Identity) -> bool:
-        # Primary: recompute the server destination hash from the identity and
-        # confirm it matches a hash we were configured to talk to.  This works
-        # even before the first telemetry push (no bootstrap race).
-        if self.server_dest_hashes:
-            try:
-                candidate = RNS.Destination(
-                    identity, RNS.Destination.OUT, RNS.Destination.SINGLE,
-                    APP_NAME, SERVER_ASPECT,
-                )
-                if candidate.hash.hex() in self.server_dest_hashes:
-                    return True
-            except Exception:
-                pass
-        # Fallback: identity hashes cached from outbound links or pre-configured
-        # in trusted_server_identities.
-        with self._trusted_lock:
-            return identity.hash.hex() in self._trusted
-
-    def _handle_cmd(self, path, data, request_id, remote_identity, requested_at):
-        if remote_identity is None:
-            return msgpack.packb({"ok": False, "error": "no identity"}, use_bin_type=True)
-
-        if not self._is_trusted_server(remote_identity):
-            RNS.log(
-                f"Rejected command from untrusted identity {remote_identity.hash.hex()}",
-                RNS.LOG_WARNING,
-            )
-            return msgpack.packb({"ok": False, "error": "not authorized"}, use_bin_type=True)
-
+    def _handle_incoming_packet(self, data: bytes, packet) -> None:
         try:
-            payload = msgpack.unpackb(data, raw=False)
-            result = self._dispatch(payload.get("cmd", ""), payload)
+            msg = msgpack.unpackb(data, raw=False)
+        except Exception:
+            return
+
+        if msg.get("t") != PKT_CMD:
+            return
+
+        server_hash = msg.get("sh", "")
+        if server_hash not in self.server_dest_hashes:
+            RNS.log(f"Rejected cmd from untrusted hash {server_hash[:12]}", RNS.LOG_WARNING)
+            return
+
+        cmd_id = msg.get("id", "")
+        cmd = msg.get("cmd", "")
+
+        # Handle chunked put_config reassembly
+        if msg.get("i") is not None:
+            self._accumulate_cmd_chunk(server_hash, cmd_id, msg)
+            return
+
+        threading.Thread(
+            target=self._execute_and_respond,
+            args=(server_hash, cmd_id, msg),
+            daemon=True,
+        ).start()
+
+    def _accumulate_cmd_chunk(self, server_hash: str, cmd_id: str, msg: dict) -> None:
+        with self._cmd_chunks_lock:
+            buf = self._cmd_chunks.setdefault(cmd_id, {"chunks": {}, "total": msg["n"], "meta": msg})
+            buf["chunks"][msg["i"]] = msg.get("c", "")
+            if len(buf["chunks"]) == buf["total"]:
+                del self._cmd_chunks[cmd_id]
+                full = buf["meta"].copy()
+                full["content"] = "".join(buf["chunks"][i] for i in range(buf["total"]))
+                full.pop("i", None); full.pop("n", None); full.pop("c", None)
+                threading.Thread(
+                    target=self._execute_and_respond,
+                    args=(server_hash, cmd_id, full),
+                    daemon=True,
+                ).start()
+
+    def _execute_and_respond(self, server_hash: str, cmd_id: str, msg: dict) -> None:
+        try:
+            result = self._dispatch(msg.get("cmd", ""), msg)
         except Exception as e:
             result = {"ok": False, "error": str(e)}
 
-        return msgpack.packb(result, use_bin_type=True)
+        output = result.get("output") or result.get("content") or result.get("error") or ""
+        encoded = output.encode("utf-8")
+        chunks = [encoded[i:i + CHUNK_SIZE] for i in range(0, len(encoded), CHUNK_SIZE)] or [b""]
+        for i, chunk in enumerate(chunks):
+            self._send_packet(server_hash, {
+                "t": PKT_RESULT,
+                "h": self._dest.hash.hex(),
+                "id": cmd_id,
+                "ok": result.get("ok", False),
+                "i": i, "n": len(chunks),
+                "c": chunk.decode("utf-8"),
+            })
 
     def _dispatch(self, cmd: str, data: dict) -> dict:
         match cmd:
@@ -501,13 +486,16 @@ class BloxxAgent:
             return {"ok": False, "error": str(e)}
 
     def _connectivity_check(self, dest_hash: str) -> dict:
-        t0 = time.time()
-        link = self._open_link_to_server(dest_hash, timeout=30)
-        if link is None:
-            return {"ok": False, "rtt_ms": None}
-        rtt_ms = (time.time() - t0) * 1000
-        link.teardown()
-        return {"ok": True, "rtt_ms": round(rtt_ms, 1)}
+        """Check if we can send a packet to dest_hash (identity must be known)."""
+        identity = RNS.Identity.recall(bytes.fromhex(dest_hash))
+        if identity is None:
+            return {"ok": False, "error": "identity unknown"}
+        target = RNS.Destination(
+            identity, RNS.Destination.OUT, RNS.Destination.SINGLE, APP_NAME, SERVER_ASPECT,
+        )
+        pkt = RNS.Packet(target, b"\x00", create_receipt=False)
+        sent = pkt.send()
+        return {"ok": sent is not False}
 
     def _rnode_reset(self, port: str) -> dict:
         try:
@@ -528,59 +516,6 @@ class BloxxAgent:
             return {"ok": ok, "output": (r.stdout + r.stderr).strip()}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-
-    # ------------------------------------------------------------------
-    # Time sync
-    # ------------------------------------------------------------------
-
-    def _time_sync(self) -> None:
-        self._last_time_sync = time.time()
-        for dest_hash_hex in self.server_dest_hashes:
-            try:
-                t1 = time.time_ns()
-                link = self._open_link_to_server(dest_hash_hex, timeout=60)
-                if link is None:
-                    continue
-
-                result: dict = {}
-                done = threading.Event()
-
-                def _resp(receipt):
-                    nonlocal result
-                    if receipt.response:
-                        result = msgpack.unpackb(receipt.response, raw=False)
-                    done.set()
-
-                link.request(
-                    PATH_TIME,
-                    data=msgpack.packb({"t1": t1}, use_bin_type=True),
-                    response_callback=_resp,
-                    failed_callback=lambda r: done.set(),
-                    timeout=30,
-                )
-                done.wait(timeout=35)
-                link.teardown()
-
-                if "t2" not in result or "t3" not in result:
-                    continue
-
-                t4 = time.time_ns()
-                t2, t3 = result["t2"], result["t3"]
-                offset_ns = ((t2 - t1) + (t3 - t4)) // 2
-                rtt_ms = ((t4 - t1) - (t3 - t2)) / 1_000_000
-                self.system_handler.rns_rtt_ms = rtt_ms
-
-                if abs(offset_ns) > 500_000_000:  # >0.5s — worth correcting
-                    offset_s = offset_ns / 1_000_000_000
-                    new_time_s = time.time() + offset_s
-                    subprocess.run(
-                        ["date", "-s", f"@{new_time_s:.3f}"],
-                        capture_output=True, timeout=5,
-                    )
-                    RNS.log(f"Time corrected by {offset_s:.3f}s, RTT {rtt_ms:.1f}ms", RNS.LOG_NOTICE)
-                break
-            except Exception as e:
-                RNS.log(f"Time sync failed to {dest_hash_hex}: {e}", RNS.LOG_WARNING)
 
     # ------------------------------------------------------------------
     # Config rollback failsafe

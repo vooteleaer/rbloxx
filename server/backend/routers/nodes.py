@@ -79,9 +79,8 @@ async def delete_node(dest_hash: str):
 
 
 @router.post("/{dest_hash}/command")
-def send_command(dest_hash: str, body: dict):
+async def send_command(dest_hash: str, body: dict):
     """Send an arbitrary command to a node. Body must include 'cmd' key."""
     if "cmd" not in body:
         raise HTTPException(400, "'cmd' is required")
-    result = rns_service.send_command(dest_hash, body)
-    return result
+    return await rns_service.send_command(dest_hash, body)

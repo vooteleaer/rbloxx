@@ -5,33 +5,15 @@ NODE_ASPECT = "node"
 SERVER_ASPECT = "server"
 VERSION = "0.1.0"
 
-# RNS request handler paths
-PATH_CMD = "/cmd"
-PATH_TELEMETRY = "/telemetry"
-PATH_CONFIG = "/config"
-PATH_TIME = "/time"
+# Plain-packet message types (value of the "t" field)
+PKT_TELEMETRY  = "tel"   # node → server: system metrics
+PKT_RTELEMETRY = "rtel"  # node → server: RNode radio metrics
+PKT_CONFIG     = "cfg"   # node → server: config file chunk
+PKT_CMD        = "cmd"   # server → node: command (possibly chunked)
+PKT_RESULT     = "res"   # node → server: command result chunk
 
-# Command names
-CMD_GET_CONFIG = "get_config"
-CMD_PUT_CONFIG = "put_config"
-CMD_PATCH_CONFIG = "patch_config"
-CMD_GET_TIME = "get_time"
-CMD_TELEMETRY = "telemetry"
-CMD_SVC_RESTART = "svc_restart"
-CMD_SVC_STOP = "svc_stop"
-CMD_SVC_START = "svc_start"
-CMD_WIFI_SET = "wifi_set"
-CMD_IFACE_SET = "iface_set"
-CMD_RNODE_RESET = "rnode_reset"
-CMD_RNODE_UPDATE = "rnode_update"
-CMD_RNS_ANNOUNCE = "rns_announce"
-CMD_LOG_PULL = "log_pull"
-CMD_DISK_CLEANUP = "disk_cleanup"
-CMD_CONNECTIVITY_CHECK = "connectivity_check"
-CMD_AGENT_UPDATE = "agent_update"
-CMD_SHUTDOWN = "shutdown"
-CMD_REBOOT = "reboot"
-CMD_SHUTDOWN_THRESHOLD = "shutdown_threshold"
+# Max content bytes per config/result chunk (leaves room for msgpack envelope in 383-byte MDU)
+CHUNK_SIZE = 300
 
 # Config types
 CFG_RNS = "rns"
