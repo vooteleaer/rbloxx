@@ -1,23 +1,38 @@
 #!/bin/sh
 set -e
 
+# RNS shared instance listens on TCP 37428 (default local_interface_port).
+RNS_PORT=37428
+
 start_rnsd() {
     echo "[bloxx] Starting rnsd..."
     rnsd &
     RNSD_PID=$!
 }
 
+# Check if the shared instance port is open (avoids triggering the digest RPC bug).
+rns_ready() {
+    python3 -c "
+import socket, sys
+try:
+    s = socket.create_connection(('127.0.0.1', $RNS_PORT), timeout=1)
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null
+}
+
 start_rnsd
 
 echo "[bloxx] Waiting for rnsd shared instance..."
 WAIT=0
-until rnstatus >/dev/null 2>&1; do
+until rns_ready; do
     sleep 1
     WAIT=$((WAIT + 1))
-    if [ $WAIT -ge 60 ]; then
-        echo "[bloxx] rnsd not ready after 60s, restarting..."
-        kill $RNSD_PID 2>/dev/null || true
-        wait $RNSD_PID 2>/dev/null || true
+    if [ $WAIT -ge 120 ]; then
+        echo "[bloxx] rnsd not ready after 120s, restarting..."
+        kill -9 $RNSD_PID 2>/dev/null || true
         start_rnsd
         WAIT=0
     fi
@@ -39,6 +54,14 @@ sys.path.insert(0, '/app/shared')
 import RNS
 from pathlib import Path
 from protocol import APP_NAME, SERVER_ASPECT
+
+# Suppress shared-instance RPC digest bug
+if hasattr(RNS.Reticulum, "_used_destination_data"):
+    _orig = RNS.Reticulum._used_destination_data
+    def _safe(self, dh):
+        try: _orig(self, dh)
+        except (EOFError, BrokenPipeError, OSError): pass
+    RNS.Reticulum._used_destination_data = _safe
 
 RNS.Reticulum(require_shared_instance=True, loglevel=0)
 identity_path = Path('/etc/bloxx/server_identity')
@@ -72,8 +95,7 @@ sys.exit(0 if hashes and hashes[0] not in ('', 'YOUR_SERVER_DEST_HASH') else 1)
 {
   "server_dest_hashes": ["$SERVER_HASH"],
   "identity_path": "/etc/bloxx/agent_identity",
-  "announce_interval": 60,
-  "time_sync_interval": 43200
+  "announce_interval": 60
 }
 EOF
     fi
