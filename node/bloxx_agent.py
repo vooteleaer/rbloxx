@@ -16,6 +16,19 @@ except ImportError:
     from RNS.vendor import umsgpack as msgpack
 import RNS
 
+# Suppress shared-instance RPC digest bug (RNS 1.2.5–1.3.x):
+# _used_destination_data calls rpc_connection.recv() but rnsd never
+# sends a response in client mode, raising EOFError that propagates
+# through announce() / Packet.send() and kills the calling thread.
+if hasattr(RNS.Reticulum, "_used_destination_data"):
+    _rns_orig_udd = RNS.Reticulum._used_destination_data
+    def _rns_safe_udd(self, dest_hash):
+        try:
+            _rns_orig_udd(self, dest_hash)
+        except (EOFError, BrokenPipeError, OSError):
+            pass
+    RNS.Reticulum._used_destination_data = _rns_safe_udd
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
 from protocol import (
     APP_NAME, NODE_ASPECT, SERVER_ASPECT, VERSION,
@@ -105,10 +118,13 @@ class BloxxAgent:
         self._wait_for_server_identity()
         first = True
         while self._running:
-            self._announce()
-            self._push_telemetry_all(include_configs=first)
-            first = False
-            self._check_auto_shutdown()
+            try:
+                self._announce()
+                self._push_telemetry_all(include_configs=first)
+                first = False
+                self._check_auto_shutdown()
+            except Exception as e:
+                RNS.log(f"Main loop error (will retry): {e}", RNS.LOG_ERROR)
             self._sleep_interruptible(self.announce_interval)
 
     def _wait_for_server_identity(self) -> None:
