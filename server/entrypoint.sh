@@ -1,26 +1,16 @@
 #!/bin/sh
 set -e
 
-# RNS shared instance listens on TCP 37428 (default local_interface_port).
-RNS_PORT=37428
-
 start_rnsd() {
     echo "[bloxx] Starting rnsd..."
     rnsd &
     RNSD_PID=$!
 }
 
-# Check if the shared instance port is open (avoids triggering the digest RPC bug).
+# Check for the abstract Unix socket rnsd creates when sharing.
+# Format in /proc/net/unix: "@rns/<instance_name>"
 rns_ready() {
-    python3 -c "
-import socket, sys
-try:
-    s = socket.create_connection(('127.0.0.1', $RNS_PORT), timeout=1)
-    s.close()
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null
+    grep -q '@rns/' /proc/net/unix 2>/dev/null
 }
 
 start_rnsd
