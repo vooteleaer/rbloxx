@@ -50,7 +50,7 @@ if hasattr(RNS.Reticulum, "_used_destination_data"):
     _orig = RNS.Reticulum._used_destination_data
     def _safe(self, dh):
         try: _orig(self, dh)
-        except (EOFError, BrokenPipeError, OSError): pass
+        except Exception: pass
     RNS.Reticulum._used_destination_data = _safe
 
 RNS.Reticulum(require_shared_instance=True, loglevel=0)
@@ -66,6 +66,29 @@ PYEOF
 ) || SERVER_HASH=""
 
 if [ -n "$SERVER_HASH" ]; then
+    # ------------------------------------------------------------------
+    # Write a standalone Reticulum config for the agent.
+    # Uses TCPClientInterface to the local rnsd instead of shared-instance
+    # RPC, avoiding the multiprocessing authkey mismatch that breaks
+    # _used_destination_data and causes the agent thread to go silent.
+    # ------------------------------------------------------------------
+    RNSD_LOCAL_PORT="${RNSD_LOCAL_PORT:-4965}"
+    mkdir -p /etc/bloxx/rns_agent
+    cat > /etc/bloxx/rns_agent/config <<EOF
+[reticulum]
+  enable_transport = False
+  share_instance = No
+
+[logging]
+  loglevel = 4
+
+[[local-rnsd]]
+  type = TCPClientInterface
+  interface_enabled = True
+  target_host = 127.0.0.1
+  target_port = $RNSD_LOCAL_PORT
+EOF
+
     # Write agent.json only if absent or server_dest_hashes is empty/placeholder
     NEEDS_WRITE=1
     if [ -f /etc/bloxx/agent.json ]; then
@@ -85,9 +108,20 @@ sys.exit(0 if hashes and hashes[0] not in ('', 'YOUR_SERVER_DEST_HASH') else 1)
 {
   "server_dest_hashes": ["$SERVER_HASH"],
   "identity_path": "/etc/bloxx/agent_identity",
+  "rns_configdir": "/etc/bloxx/rns_agent",
   "announce_interval": 60
 }
 EOF
+    else
+        # Existing agent.json — ensure rns_configdir is set
+        python3 -c "
+import json
+path = '/etc/bloxx/agent.json'
+c = json.load(open(path))
+if 'rns_configdir' not in c:
+    c['rns_configdir'] = '/etc/bloxx/rns_agent'
+    json.dump(c, open(path, 'w'), indent=2)
+" 2>/dev/null || true
     fi
 
     echo "[bloxx] Starting local node agent..."

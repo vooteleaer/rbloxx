@@ -25,7 +25,7 @@ if hasattr(RNS.Reticulum, "_used_destination_data"):
     def _rns_safe_udd(self, dest_hash):
         try:
             _rns_orig_udd(self, dest_hash)
-        except (EOFError, BrokenPipeError, OSError):
+        except Exception:
             pass
     RNS.Reticulum._used_destination_data = _rns_safe_udd
 
@@ -66,7 +66,13 @@ class BloxxAgent:
 
     def start(self) -> None:
         identity = self._load_or_create_identity()
-        self._rns = RNS.Reticulum(require_shared_instance=True)
+        rns_configdir = self.cfg.get("rns_configdir")
+        if rns_configdir:
+            # Standalone mode with custom config dir (e.g. TCPClientInterface to rnsd).
+            # Avoids shared-instance RPC auth issues on multi-process deployments.
+            self._rns = RNS.Reticulum(configdir=rns_configdir)
+        else:
+            self._rns = RNS.Reticulum(require_shared_instance=True)
 
         self._dest = RNS.Destination(
             identity,
