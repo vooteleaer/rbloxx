@@ -128,9 +128,34 @@ if 'rns_configdir' not in c:
 
     echo "[bloxx] Starting local node agent..."
     python3 /app/node/bloxx_agent.py /etc/bloxx/agent.json &
+    AGENT_PID=$!
 else
     echo "[bloxx] Warning: could not compute server hash — local agent skipped"
+    AGENT_PID=""
 fi
+
+# Background watchdog: restart rnsd and agent if they die
+(
+    while true; do
+        sleep 15
+        if ! kill -0 "$RNSD_PID" 2>/dev/null; then
+            echo "[bloxx-wd] rnsd died, restarting..."
+            rnsd &
+            RNSD_PID=$!
+            WAIT=0
+            until rns_ready || [ $WAIT -ge 60 ]; do
+                sleep 1; WAIT=$((WAIT + 1))
+            done
+            echo "[bloxx-wd] rnsd restarted (PID $RNSD_PID)"
+        fi
+        if [ -n "$AGENT_PID" ] && ! kill -0 "$AGENT_PID" 2>/dev/null; then
+            echo "[bloxx-wd] agent died, restarting..."
+            python3 /app/node/bloxx_agent.py /etc/bloxx/agent.json &
+            AGENT_PID=$!
+            echo "[bloxx-wd] agent restarted (PID $AGENT_PID)"
+        fi
+    done
+) &
 
 echo "[bloxx] Starting Bloxx server..."
 exec uvicorn main:app --host 0.0.0.0 --port 8200 --workers 1
