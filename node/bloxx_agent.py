@@ -387,6 +387,16 @@ class BloxxAgent:
         server_dest = self._server_dest(dest_hash_hex)
         if server_dest is None:
             return False
+        dest_hash = bytes.fromhex(dest_hash_hex)
+        if not RNS.Transport.has_path(dest_hash):
+            RNS.Transport.request_path(dest_hash)
+            for _ in range(15):
+                time.sleep(1)
+                if RNS.Transport.has_path(dest_hash):
+                    break
+            else:
+                RNS.log(f"No path to {dest_hash_hex[:12]} after 15s", RNS.LOG_WARNING)
+                return False
         try:
             payload = msgpack.packb(data, use_bin_type=True)
             receipt = RNS.Packet(server_dest, payload, create_receipt=False).send()
