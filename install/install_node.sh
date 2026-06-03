@@ -267,9 +267,40 @@ else
 
 [logging]
   loglevel = 4
+
+[[Local TCP]]
+  type = TCPServerInterface
+  interface_enabled = True
+  listen_ip = 127.0.0.1
+  listen_port = 4965
 $IFACE_BLOCK
 EOF
     _ok "RNS config written to $RNS_CFG_FILE"
+fi
+
+# Standalone agent RNS config — lets the agent call get_interface_stats() without
+# hitting the shared-instance RPC auth bug that blocks RNode stat collection.
+if [ ! -f /etc/bloxx/rns_agent/config ]; then
+    mkdir -p /etc/bloxx/rns_agent
+    cat > /etc/bloxx/rns_agent/config << 'EOF'
+[reticulum]
+  enable_transport = False
+  share_instance = No
+
+[logging]
+  loglevel = 4
+
+[interfaces]
+
+  [[local-rnsd]]
+    type = TCPClientInterface
+    interface_enabled = True
+    target_host = 127.0.0.1
+    target_port = 4965
+EOF
+    _ok "Created standalone agent RNS config at /etc/bloxx/rns_agent/config"
+else
+    _ok "Standalone agent RNS config already exists"
 fi
 
 # ---------------------------------------------------------------------------
@@ -400,7 +431,8 @@ if [ ! -f /etc/bloxx/agent.json ]; then
   "server_dest_hashes": ["$SERVER_HASH"],
   "rnode_ports": [$RNODE_PORTS_JSON],
   "shutdown_soc_pct": 0,
-  "watchdog_feed_interval_s": 10
+  "watchdog_feed_interval_s": 10,
+  "rns_configdir": "/etc/bloxx/rns_agent"
 }
 EOF
     _ok "Created /etc/bloxx/agent.json"
@@ -433,6 +465,7 @@ After=network.target rnsd.service
 Wants=rnsd.service
 
 [Service]
+ExecStartPre=/bin/sleep 15
 ExecStart=$PYTHON $NODE_DIR/bloxx_agent.py /etc/bloxx/agent.json
 Restart=on-failure
 RestartSec=10

@@ -68,8 +68,9 @@ class BloxxAgent:
         identity = self._load_or_create_identity()
         rns_configdir = self.cfg.get("rns_configdir")
         if rns_configdir:
-            # Standalone mode with custom config dir (e.g. TCPClientInterface to rnsd).
-            # Avoids shared-instance RPC auth issues on multi-process deployments.
+            # Standalone mode with custom config dir (TCPClientInterface to local rnsd).
+            # Avoids shared-instance RPC auth issues that break get_interface_stats().
+            self._ensure_standalone_rns_config(rns_configdir)
             self._rns = RNS.Reticulum(configdir=rns_configdir)
         else:
             self._rns = RNS.Reticulum(require_shared_instance=True)
@@ -114,6 +115,34 @@ class BloxxAgent:
         identity.to_file(str(self.identity_path))
         RNS.log(f"Created new node identity: {identity.hash.hex()}", RNS.LOG_NOTICE)
         return identity
+
+    def _ensure_standalone_rns_config(self, configdir: str) -> None:
+        """Auto-create a standalone RNS config using TCPClientInterface to local rnsd.
+
+        rnsd must have a TCPServerInterface on localhost:{port} (4965 by default).
+        This lets the agent call get_interface_stats() without the shared-instance
+        RPC auth failure that blocks RNode stat collection.
+        """
+        config_path = Path(configdir) / "config"
+        if config_path.exists():
+            return
+        port = self.cfg.get("rns_local_port", 4965)
+        Path(configdir).mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            "[reticulum]\n"
+            "  enable_transport = False\n"
+            "  share_instance = No\n\n"
+            "[logging]\n"
+            "  loglevel = 4\n\n"
+            "[interfaces]\n\n"
+            "  [[local-rnsd]]\n"
+            "    type = TCPClientInterface\n"
+            "    interface_enabled = True\n"
+            "    target_host = 127.0.0.1\n"
+            f"    target_port = {port}\n",
+            encoding="utf-8",
+        )
+        RNS.log(f"Created standalone RNS config at {config_path} (port {port})", RNS.LOG_NOTICE)
 
     # ------------------------------------------------------------------
     # Main loop — announce + telemetry push
@@ -208,53 +237,99 @@ class BloxxAgent:
 
         return sys_tel, rnode_tel if rnode_tel else None
 
+    def _get_rnsd_authkey(self) -> bytes | None:
+        """Compute the RPC authkey from rnsd's transport identity file.
+
+        rnsd uses the default RNS configdir for the user it runs as.
+        The agent typically runs as the same user, so Path.home() is tried first.
+        """
+        candidates = [
+            Path.home() / ".reticulum" / "storage" / "transport_identity",
+            Path("/home/reticulum/.reticulum/storage/transport_identity"),
+            Path("/root/.reticulum/storage/transport_identity"),
+        ]
+        for path in candidates:
+            if path.exists():
+                try:
+                    ti = RNS.Identity.from_file(str(path))
+                    return RNS.Identity.full_hash(ti.get_private_key())
+                except Exception:
+                    pass
+        return None
+
+    def _get_interface_stats_via_rpc(self) -> dict | None:
+        """Get interface stats from rnsd via direct authenticated RPC.
+
+        Works even when the agent uses a different configdir than rnsd (standalone
+        mode), because we compute the authkey from rnsd's own transport identity.
+        """
+        from multiprocessing.connection import Client
+        authkey = self._get_rnsd_authkey()
+        if not authkey:
+            return None
+        try:
+            conn = Client(b"\x00rns/default/rpc", family="AF_UNIX", authkey=authkey)
+            conn.send({"get": "interface_stats"})
+            result = conn.recv()
+            conn.close()
+            return result
+        except Exception:
+            return None
+
     def _get_rns_stats(self) -> dict:
         try:
             stats = self._rns.get_interface_stats()
-            ifaces = stats.get("interfaces", [])
-
-            # Top-level rxb/txb may not exist in shared-instance client mode —
-            # fall back to summing per-interface counters.
-            def _sum(key):
-                v = stats.get(key)
-                if v is not None:
-                    return v
-                vals = [i.get(key) for i in ifaces if i.get(key) is not None]
-                return sum(vals) if vals else None
-
-            result: dict = {
-                "rns_rxb": _sum("rxb"),
-                "rns_txb": _sum("txb"),
-                "rns_rxs": _sum("rxs"),
-                "rns_txs": _sum("txs"),
-                "interfaces": [
-                    {"name": i.get("name"), "rxb": i.get("rxb"), "txb": i.get("txb")}
-                    for i in ifaces
-                ],
-            }
-
-            for iface in ifaces:
-                # Type field may be the short class name or the full dotted path
-                itype = iface.get("type") or ""
-                if "RNodeInterface" in itype:
-                    result["rnode_airtime_short"]      = iface.get("airtime_short")
-                    result["rnode_airtime_long"]        = iface.get("airtime_long")
-                    result["rnode_channel_load_short"]  = iface.get("channel_load_short")
-                    result["rnode_channel_load_long"]   = iface.get("channel_load_long")
-                    result["rnode_bitrate"]             = iface.get("bitrate")
-                    result["rnode_noise_floor"]         = iface.get("noise_floor")
-                    result["rnode_interference_dbm"]    = iface.get("interference_last_dbm")
-                    result["rnode_announce_in"]         = iface.get("incoming_announce_frequency")
-                    result["rnode_announce_out"]        = iface.get("outgoing_announce_frequency")
-                    result["rnode_held_announces"]      = iface.get("held_announces")
-                    break
-
-            return result
         except Exception:
+            # Shared-instance RPC auth can fail when agent and rnsd use different
+            # configdirs (different transport identities → different authkeys).
+            # Fall back to a direct RPC call using rnsd's own transport identity.
+            stats = self._get_interface_stats_via_rpc()
+
+        if not stats:
             return {
                 "rns_rxb": None, "rns_txb": None,
                 "rns_rxs": None, "rns_txs": None, "interfaces": None,
             }
+
+        ifaces = stats.get("interfaces", [])
+
+        # Top-level rxb/txb may not exist in shared-instance client mode —
+        # fall back to summing per-interface counters.
+        def _sum(key):
+            v = stats.get(key)
+            if v is not None:
+                return v
+            vals = [i.get(key) for i in ifaces if i.get(key) is not None]
+            return sum(vals) if vals else None
+
+        result: dict = {
+            "rns_rxb": _sum("rxb"),
+            "rns_txb": _sum("txb"),
+            "rns_rxs": _sum("rxs"),
+            "rns_txs": _sum("txs"),
+            "interfaces": [
+                {"name": i.get("name"), "rxb": i.get("rxb"), "txb": i.get("txb")}
+                for i in ifaces
+            ],
+        }
+
+        for iface in ifaces:
+            # Type field may be the short class name or the full dotted path
+            itype = iface.get("type") or ""
+            if "RNodeInterface" in itype:
+                result["rnode_airtime_short"]      = iface.get("airtime_short")
+                result["rnode_airtime_long"]        = iface.get("airtime_long")
+                result["rnode_channel_load_short"]  = iface.get("channel_load_short")
+                result["rnode_channel_load_long"]   = iface.get("channel_load_long")
+                result["rnode_bitrate"]             = iface.get("bitrate")
+                result["rnode_noise_floor"]         = iface.get("noise_floor")
+                result["rnode_interference_dbm"]    = iface.get("interference_last_dbm")
+                result["rnode_announce_in"]         = iface.get("incoming_announce_frequency")
+                result["rnode_announce_out"]        = iface.get("outgoing_announce_frequency")
+                result["rnode_held_announces"]      = iface.get("held_announces")
+                break
+
+        return result
 
     def _get_topology(self) -> dict:
         """Collect path table, link rates, and per-neighbor signal quality."""

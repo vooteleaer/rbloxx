@@ -1,0 +1,45 @@
+# Bloxx node agent configuration
+
+# Stable RNS identity for this node (created automatically on first run)
+identity_path: /etc/bloxx/identity
+
+# Interval between announces and telemetry pushes (seconds)
+announce_interval: 300
+
+# Server destination hashes to push telemetry to and receive commands from
+# Get this from the server UI or: python -c "import RNS; ..."
+server_dest_hashes:
+  - "aabbccddeeff..."   # replace with actual server destination hash
+
+# Trusted server identity hashes (populated automatically on first telemetry push)
+# You can also pre-populate this from the server UI
+trusted_server_identities: []
+
+# Config file paths
+rns_config_path: ~/.reticulum/config
+
+# Thresholds for error reporting
+thresholds:
+  batt_critical_pct: 10       # SoC % below which batt_critical is set
+  disk_full_pct: 90           # disk usage % above which disk_full is set
+  temp_critical_c: 80         # CPU temp above which temp_critical is set
+  load_high_factor: 2.0       # load avg / cpu_count above which load_high is set
+  swap_high_pct: 80           # swap usage % above which swap_high is set
+  no_peers_minutes: 30        # minutes without any RNS peer before no_peers is set
+  zero_traffic_minutes: 15    # minutes of zero interface traffic before interface_down
+
+# Watchdog
+watchdog_timeout_s: 60        # hardware watchdog timeout (must feed more often than this)
+watchdog_feed_interval_s: 10  # how often to feed the watchdog
+
+# RNode monitoring
+rnode_ports:                  # serial ports to monitor for stuck RNode
+  - /dev/ttyUSB0
+
+# Auto-shutdown SoC threshold (0 = disabled)
+shutdown_soc_pct: 5
+
+# Power backend: "ina226", "ina219", "ups_hat", or "none"
+power_backend: none
+power_i2c_bus: 1
+power_i2c_addr: 0x40

@@ -150,28 +150,15 @@ class ConfigHandler:
         self._rollback_config(path, backup)
 
     def _can_reach_server(self) -> bool:
-        """Try to open a link to any configured server. Returns True if one responds."""
+        """Return True if any server is reachable (identity known + path exists).
+
+        Plain-packet protocol — no Link establishment needed or expected.
+        """
         import RNS as _RNS
         for dest_hash_hex in self._watchdog_dest_hashes:
             try:
                 dest_hash = bytes.fromhex(dest_hash_hex)
-                if not _RNS.Transport.has_path(dest_hash):
-                    continue
-                identity = _RNS.Identity.recall(dest_hash)
-                if identity is None:
-                    continue
-                from protocol import APP_NAME, SERVER_ASPECT
-                dest = _RNS.Destination(
-                    identity, _RNS.Destination.OUT, _RNS.Destination.SINGLE,
-                    APP_NAME, SERVER_ASPECT,
-                )
-                link = _RNS.Link(dest)
-                deadline = time.time() + 15
-                while link.status != _RNS.Link.ACTIVE and time.time() < deadline:
-                    time.sleep(0.2)
-                reachable = link.status == _RNS.Link.ACTIVE
-                link.teardown()
-                if reachable:
+                if _RNS.Identity.recall(dest_hash) and _RNS.Transport.has_path(dest_hash):
                     return True
             except Exception:
                 pass

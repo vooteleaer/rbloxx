@@ -82,11 +82,13 @@ if [ -n "$SERVER_HASH" ]; then
 [logging]
   loglevel = 4
 
-[[local-rnsd]]
-  type = TCPClientInterface
-  interface_enabled = True
-  target_host = 127.0.0.1
-  target_port = $RNSD_LOCAL_PORT
+[interfaces]
+
+  [[local-rnsd]]
+    type = TCPClientInterface
+    interface_enabled = True
+    target_host = 127.0.0.1
+    target_port = $RNSD_LOCAL_PORT
 EOF
 
     # Write agent.json only if absent or server_dest_hashes is empty/placeholder
