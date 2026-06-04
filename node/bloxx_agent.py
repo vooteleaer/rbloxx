@@ -276,13 +276,16 @@ class BloxxAgent:
             return None
 
     def _get_rns_stats(self) -> dict:
-        try:
-            stats = self._rns.get_interface_stats()
-        except Exception:
-            # Shared-instance RPC auth can fail when agent and rnsd use different
-            # configdirs (different transport identities → different authkeys).
-            # Fall back to a direct RPC call using rnsd's own transport identity.
-            stats = self._get_interface_stats_via_rpc()
+        # In standalone mode the agent's RNS instance only sees its own
+        # TCPClientInterface, not the RNode or bnZ interfaces in rnsd.
+        # Always prefer the direct RPC call to rnsd so we get the full
+        # interface list; fall back to the local instance if RPC fails.
+        stats = self._get_interface_stats_via_rpc()
+        if not stats:
+            try:
+                stats = self._rns.get_interface_stats()
+            except Exception:
+                stats = None
 
         if not stats:
             return {
