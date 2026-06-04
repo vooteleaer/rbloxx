@@ -138,7 +138,9 @@ fi
 (
     while true; do
         sleep 15
-        if ! kill -0 "$RNSD_PID" 2>/dev/null; then
+        # Reap any zombie children so kill -0 reflects actual liveness
+        wait -n 2>/dev/null || true
+        if ! kill -0 "$RNSD_PID" 2>/dev/null || [ "$(cat /proc/$RNSD_PID/status 2>/dev/null | grep '^State:' | awk '{print $2}')" = "Z" ]; then
             echo "[bloxx-wd] rnsd died, restarting..."
             rnsd &
             RNSD_PID=$!
@@ -148,7 +150,7 @@ fi
             done
             echo "[bloxx-wd] rnsd restarted (PID $RNSD_PID)"
         fi
-        if [ -n "$AGENT_PID" ] && ! kill -0 "$AGENT_PID" 2>/dev/null; then
+        if [ -n "$AGENT_PID" ] && { ! kill -0 "$AGENT_PID" 2>/dev/null || [ "$(cat /proc/$AGENT_PID/status 2>/dev/null | grep '^State:' | awk '{print $2}')" = "Z" ]; }; then
             echo "[bloxx-wd] agent died, restarting..."
             python3 /app/node/bloxx_agent.py /etc/bloxx/agent.json &
             AGENT_PID=$!

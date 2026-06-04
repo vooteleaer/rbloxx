@@ -231,7 +231,6 @@ class BloxxAgent:
             "rns_txb": rns_stats.get("rns_txb"),
             "rns_rxs": rns_stats.get("rns_rxs"),
             "rns_txs": rns_stats.get("rns_txs"),
-            "topology": self._get_topology(),
             "errors": errors,
         }
 
@@ -402,7 +401,7 @@ class BloxxAgent:
             receipt = RNS.Packet(server_dest, payload, create_receipt=False).send()
             return receipt is not False
         except Exception as e:
-            RNS.log(f"Packet send error to {dest_hash_hex}: {e}", RNS.LOG_DEBUG)
+            RNS.log(f"Packet send error to {dest_hash_hex}: {e}", RNS.LOG_WARNING)
             return False
 
     def _push_configs(self, dest_hash_hex: str) -> None:
