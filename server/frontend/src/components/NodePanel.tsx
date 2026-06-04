@@ -90,32 +90,36 @@ function LocationMap({ lat, lon }: { lat: number; lon: number }) {
   const center = latLonToTile(lat, lon, ZOOM);
   const half = Math.floor(GRID / 2);
   const totalPx = GRID * TILE_SIZE;
+  const displayPx = Math.round(totalPx / 2);
   const dotX = half * TILE_SIZE + center.px;
   const dotY = half * TILE_SIZE + center.py;
 
   return (
-    <div className="relative overflow-hidden rounded-lg border border-gray-200 flex-shrink-0"
-         style={{ width: totalPx, height: totalPx }}>
-      {Array.from({ length: GRID }, (_, row) =>
-        Array.from({ length: GRID }, (_, col) => {
-          const tx = center.x - half + col;
-          const ty = center.y - half + row;
-          return (
-            <img
-              key={`${row}-${col}`}
-              src={`https://tile.openstreetmap.org/${ZOOM}/${tx}/${ty}.png`}
-              alt=""
-              width={TILE_SIZE}
-              height={TILE_SIZE}
-              style={{ position: "absolute", left: col * TILE_SIZE, top: row * TILE_SIZE }}
-            />
-          );
-        })
-      )}
-      <div
-        className="absolute w-3 h-3 rounded-full bg-red-500 border-2 border-white shadow"
-        style={{ left: dotX - 6, top: dotY - 6 }}
-      />
+    <div className="rounded-lg border border-gray-200 flex-shrink-0 overflow-hidden"
+         style={{ width: displayPx, height: displayPx }}>
+      <div style={{ transform: "scale(0.5)", transformOrigin: "top left",
+                    position: "relative", width: totalPx, height: totalPx }}>
+        {Array.from({ length: GRID }, (_, row) =>
+          Array.from({ length: GRID }, (_, col) => {
+            const tx = center.x - half + col;
+            const ty = center.y - half + row;
+            return (
+              <img
+                key={`${row}-${col}`}
+                src={`https://tile.openstreetmap.org/${ZOOM}/${tx}/${ty}.png`}
+                alt=""
+                width={TILE_SIZE}
+                height={TILE_SIZE}
+                style={{ position: "absolute", left: col * TILE_SIZE, top: row * TILE_SIZE }}
+              />
+            );
+          })
+        )}
+        <div
+          className="absolute w-3 h-3 rounded-full bg-red-500 border-2 border-white shadow"
+          style={{ left: dotX - 6, top: dotY - 6 }}
+        />
+      </div>
     </div>
   );
 }
@@ -377,7 +381,7 @@ function UnknownCard({ iface }: { iface: RnsInterface }) {
 // RNS Config tab
 // ---------------------------------------------------------------------------
 
-function RnsConfigTab({ destHash }: { destHash: string }) {
+function RnsConfigTab({ destHash, onLatLon }: { destHash: string; onLatLon?: (lat: number | null, lon: number | null) => void }) {
   const [rnsConfig, setRnsConfig] = useState<RnsConfig | null>(null);
   const [status, setStatus] = useState("");
   const [noPath, setNoPath] = useState(false);
@@ -480,6 +484,8 @@ function RnsConfigTab({ destHash }: { destHash: string }) {
   const lat = locationIface ? parseFloat(locationIface.fields.latitude!) : null;
   const lon = locationIface ? parseFloat(locationIface.fields.longitude!) : null;
 
+  useEffect(() => { onLatLon?.(lat, lon); }, [lat, lon]);
+
   if (loading) return <p className="text-sm text-gray-400 p-4">Loading…</p>;
 
   if (noPath) return (
@@ -494,13 +500,6 @@ function RnsConfigTab({ destHash }: { destHash: string }) {
 
   return (
     <div className="space-y-4">
-      {/* Location map */}
-      {lat != null && lon != null && !isNaN(lat) && !isNaN(lon) && (
-        <div className="flex justify-center">
-          <LocationMap lat={lat} lon={lon} />
-        </div>
-      )}
-
       {rnsConfig && (
         <>
           {/* [reticulum] */}
@@ -798,6 +797,7 @@ export default function NodePanel({ destHash, node, onDelete, liveTelemetry }: P
   const [tab, setTab] = useState<Tab>("rns");
   const [labelEdit, setLabelEdit] = useState<string | null>(null);
   const [labelSaving, setLabelSaving] = useState(false);
+  const [latLon, setLatLon] = useState<{ lat: number; lon: number } | null>(null);
 
   useEffect(() => {
     api.nodes.telemetry(destHash, 60).then(setTelemetry).catch(() => {});
@@ -887,39 +887,60 @@ export default function NodePanel({ destHash, node, onDelete, liveTelemetry }: P
       </div>
 
       {/* Telemetry sparklines */}
-      {telemetry.length > 0 && (
+      {telemetry.length > 0 && (() => {
+        const newestTs = telemetry[0]?.ts;
+        const oldestTs = telemetry[telemetry.length - 1]?.ts;
+        const windowSec = newestTs && oldestTs ? newestTs - oldestTs : null;
+        const windowLabel = windowSec
+          ? windowSec >= 3600
+            ? `${(windowSec / 3600).toFixed(1)}h window`
+            : `${Math.round(windowSec / 60)}m window`
+          : null;
+        return (
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-4">
-          <div className="flex flex-wrap gap-6">
-            {spark("cpu_pct",     "CPU",     "%",  "#3b82f6", 0, 100)}
-            {spark("ram_pct",     "RAM",     "%",  "#8b5cf6", 0, 100)}
-            {spark("disk_pct",   "Disk",    "%",  "#f59e0b", 0, 100)}
-            {spark("temp_c",     "Temp",    "°C", "#ef4444")}
-            {spark("rns_rtt_ms", "RTT",     "ms", "#64748b")}
-            {spark("batt_soc_pct",   "Battery",  "%", "#22c55e", 0, 100)}
-            {spark("batt_power_w",   "Bat power", "W", "#16a34a")}
-            {spark("solar_power_w",  "Solar",    "W", "#eab308")}
-          </div>
-
-          {/* RNode section — only rendered when the node has RNode data */}
-          {(() => {
-            const rnodeSparks = [
-              spark("rnode_airtime_short",      "Airtime (short)", "%",   "#06b6d4", 0, 100),
-              spark("rnode_airtime_long",       "Airtime (long)",  "%",   "#0891b2", 0, 100),
-              spark("rnode_channel_load_short", "Ch load",         "%",   "#7c3aed", 0, 100),
-              spark("rnode_noise_floor",        "Noise floor",     "dBm", "#94a3b8"),
-              spark("rnode_interference_dbm",   "Interference",    "dBm", "#f43f5e"),
-              spark("rnode_bitrate",            "Bitrate",         "bps", "#10b981"),
-            ].filter(Boolean);
-            if (!rnodeSparks.length) return null;
-            return (
-              <div>
-                <p className="text-xs text-gray-400 mb-3">RNode</p>
-                <div className="flex flex-wrap gap-6">{rnodeSparks}</div>
+          {windowLabel && (
+            <p className="text-xs text-gray-400 -mb-2">{windowLabel} · {telemetry.length} samples</p>
+          )}
+          <div className="flex gap-4 items-start">
+            <div className="flex-1 space-y-4">
+              <div className="flex flex-wrap gap-6">
+                {spark("cpu_pct",     "CPU",     "%",  "#3b82f6", 0, 100)}
+                {spark("ram_pct",     "RAM",     "%",  "#8b5cf6", 0, 100)}
+                {spark("disk_pct",   "Disk",    "%",  "#f59e0b", 0, 100)}
+                {spark("temp_c",     "Temp",    "°C", "#ef4444")}
+                {spark("rns_rtt_ms", "RTT",     "ms", "#64748b")}
+                {spark("batt_soc_pct",   "Battery",  "%", "#22c55e", 0, 100)}
+                {spark("batt_power_w",   "Bat power", "W", "#16a34a")}
+                {spark("solar_power_w",  "Solar",    "W", "#eab308")}
               </div>
-            );
-          })()}
+
+              {/* RNode section — only rendered when the node has RNode data */}
+              {(() => {
+                const rnodeSparks = [
+                  spark("rnode_airtime_short",      "Airtime (short)", "%",   "#06b6d4", 0, 100),
+                  spark("rnode_airtime_long",       "Airtime (long)",  "%",   "#0891b2", 0, 100),
+                  spark("rnode_channel_load_short", "Ch load",         "%",   "#7c3aed", 0, 100),
+                  spark("rnode_noise_floor",        "Noise floor",     "dBm", "#94a3b8"),
+                  spark("rnode_interference_dbm",   "Interference",    "dBm", "#f43f5e"),
+                  spark("rnode_bitrate",            "Bitrate",         "bps", "#10b981"),
+                ].filter(Boolean);
+                if (!rnodeSparks.length) return null;
+                return (
+                  <div>
+                    <p className="text-xs text-gray-400 mb-3">RNode</p>
+                    <div className="flex flex-wrap gap-6">{rnodeSparks}</div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {latLon && !isNaN(latLon.lat) && !isNaN(latLon.lon) && (
+              <LocationMap lat={latLon.lat} lon={latLon.lon} />
+            )}
+          </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Settings tabs */}
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -937,7 +958,7 @@ export default function NodePanel({ destHash, node, onDelete, liveTelemetry }: P
           ))}
         </div>
         <div className="p-4">
-          {tab === "rns" ? <RnsConfigTab destHash={destHash} /> : <AgentConfigTab destHash={destHash} />}
+          {tab === "rns" ? <RnsConfigTab destHash={destHash} onLatLon={(lat, lon) => setLatLon(lat != null && lon != null ? { lat, lon } : null)} /> : <AgentConfigTab destHash={destHash} />}
         </div>
       </div>
 
