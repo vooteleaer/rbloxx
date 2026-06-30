@@ -2,7 +2,7 @@
 
 Remote administration system for a fleet of [Reticulum](https://reticulum.network) nodes.
 
-- **Node agent** — runs on each device alongside `rnsd`; sends telemetry, accepts commands over RNS
+- **Node agent** — runs on each device alongside `rnsd`; sends telemetry, accepts commands over LXMF/RNS
 - **Server** — FastAPI backend + React UI; receives telemetry, manages config, pushes commands
 - **All traffic over Reticulum** — works over LoRa (RNode), TCP, or any RNS interface; no separate cloud dependency
 
@@ -23,10 +23,10 @@ docker compose up -d
 The server destination hash is shown in the container log on first start:
 
 ```bash
-docker logs server-rbloxx-1 | grep "dest"
+docker compose logs rbloxx | grep "dest"
 ```
 
-Open `http://server-ip:8200` in a browser.
+Open `http://server-ip` in a browser.
 
 ---
 
@@ -42,7 +42,7 @@ sudo bash install/install_node.sh
 
 The script will:
 1. Install Python 3 if missing
-2. Install Reticulum (`rns` + `rnodeconf`)
+2. Install Reticulum (`rns` + `rnodeconf`) and LXMF
 3. Probe serial ports (`ttyUSB*`, `ttyACM*`, `ttyS*`) and auto-detect RNode hardware
 4. Ask for the RNode frequency band if an RNode is found
 5. Write `/root/.reticulum/config` with the detected interface
@@ -57,7 +57,7 @@ The script will:
 2. Click **+ Add node** in the sidebar
 3. Paste the destination hash printed by the install script
 
-The node will appear as offline until it connects. Once `rnsd` on the node finds a path to the server, the agent pushes telemetry and the node goes online.
+The node will appear as offline until it connects. Once `rnsd` on the node finds a path to the server, the agent sends telemetry and the node goes online.
 
 ### Show the hash again later
 
@@ -65,14 +65,13 @@ The node will appear as offline until it connects. Once `rnsd` on the node finds
 sudo bash install/install_node.sh --show-hash
 ```
 
-### Set the server destination hash
+### Set the server destination hash on the node
 
 Edit `/etc/rbloxx/agent.json` and fill in `server_dest_hashes`:
 
 ```json
 {
-  "server_dest_hashes": ["PASTE_SERVER_DEST_HASH_HERE"],
-  ...
+  "server_dest_hashes": ["PASTE_SERVER_DEST_HASH_HERE"]
 }
 ```
 
@@ -91,19 +90,29 @@ rbloxx/
 │   ├── rbloxx_agent.py
 │   ├── config_handler.py
 │   ├── power_handler.py
-│   └── system_handler.py
+│   ├── system_handler.py
+│   └── nomadnet_page.py
 ├── server/
 │   ├── backend/        FastAPI backend
 │   ├── frontend/       React + Vite + Tailwind UI
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   └── entrypoint.sh
-├── shared/             Protocol constants (used by both node and server)
+├── shared/             Shared CLI grammar and protocol constants
+│   ├── cli_grammar.py
+│   ├── test_cli_grammar.py
 │   └── protocol.py
 └── install/
     ├── install_server.sh   Server setup (optional, Docker is preferred)
     └── install_node.sh     Node setup wizard
 ```
+
+---
+
+## Documentation
+
+- [COMMANDS.md](COMMANDS.md) — hands-on guide to the node command syntax
+- [PROTOCOL.md](PROTOCOL.md) — wire format, telemetry model, security model, config reference
 
 ---
 
@@ -114,12 +123,18 @@ rbloxx/
 cd server/backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8200
+uvicorn main:app --reload --port 8000
 ```
 
 **Frontend:**
 ```bash
 cd server/frontend
 npm install
-npm run dev   # proxies /api to localhost:8200
+npm run dev   # proxies /api to localhost:8000
+```
+
+**Grammar unit tests** (no RNS/LXMF needed):
+```bash
+cd shared
+python3 -m pytest test_cli_grammar.py -v
 ```

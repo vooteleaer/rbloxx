@@ -54,6 +54,8 @@ help svc          -> usage for just "svc"
 | `disk cleanup` | Vacuum old journal logs to free disk space |
 | `agent update` | `git pull` the agent code, then restart it |
 | `rnode reset\|update <port>` | Reset or flash firmware on an RNode |
+| `get telem` | Ask the node to immediately resend all current telemetry values |
+| `get ifstatus` | Get online/offline status for every RNS interface |
 | `trust <hash>` / `untrust <hash>` | Manage the trusted-server list |
 
 ## Everyday admin
@@ -162,6 +164,7 @@ any file — reset to their `agent.json` default on next restart):
 |---|---|
 | `shutdown_threshold` | Battery % below which the node auto-shuts-down (0 disables) |
 | `tel_update` | Minimum seconds between re-sends of any one telemetry metric (default 30) |
+| `tel_max_interval` | Force-resend interval — a metric is sent after this many seconds even with no change (default 300, the heartbeat cap) |
 
 **System keys** (applied directly to the OS, not via systemd's dbus —
 deliberately avoided since not every image runs one):
@@ -206,6 +209,29 @@ wifi_psk` always refuses — the agent will never echo a password back over
 the wire, even to a trusted server. A failed connection attempt keeps both
 values in memory so you can retry just the wrong one (e.g. fix `wifi_psk`
 without retyping `wifi_network`); a successful connection clears both.
+
+## Telemetry and interface status
+
+**Force a full telemetry resend** — the node immediately sends a `tel <key>=<value>`
+message for every metric it knows about, regardless of whether anything has changed.
+Values still arrive as separate messages, not in the command reply:
+
+```
+get telem
+```
+
+This is useful when the UI is showing stale or missing values, or right after adding a
+new node, without having to wait for the heartbeat cap to fire.
+
+**Check interface status** — returns one line per RNS interface, showing whether it
+is currently online or offline (keyed by the `[[Section Name]]` from the RNS config):
+
+```
+get ifstatus
+-> OK: RNode=online
+   Local TCP=online
+   AutoInterface=offline
+```
 
 ## Trust management
 

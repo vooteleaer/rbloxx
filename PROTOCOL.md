@@ -1,294 +1,186 @@
 # RBloxx Protocol Reference
 
-All RBloxx communication runs over [Reticulum Network Stack (RNS)](https://reticulum.network). No external cloud or broker is required — traffic works over LoRa (RNode), TCP, or any RNS interface.
+All RBloxx communication runs over [LXMF](https://github.com/markqvist/LXMF) on top of
+[Reticulum (RNS)](https://reticulum.network). No external cloud or broker is required —
+traffic works over LoRa (RNode), TCP, or any RNS interface.
+
+For a hands-on guide to the command syntax see [COMMANDS.md](COMMANDS.md).
+
+---
 
 ## Addresses
 
-Every participant is identified by an RNS destination hash, derived from the identity key and the app/aspect names.
+Both the server and every node agent listen on the same LXMF-standard destination:
 
-| Role | App name | Aspect | Listens on |
-|---|---|---|---|
-| Server | `rbloxx` | `server` | `PATH_TELEMETRY`, `PATH_TIME` |
-| Node agent | `rbloxx` | `node` | `PATH_CMD` |
+```
+RNS.Destination(identity, IN, SINGLE, "lxmf", "delivery")
+```
 
-### Request paths
+This is the destination that `LXMRouter.register_delivery_identity()` hardcodes. It means
+the address (destination hash) of any participant is determined solely by its RNS identity
+key — not by any app/aspect names. Two consequences:
 
-| Constant | Path |
-|---|---|
-| `PATH_CMD` | `/cmd` |
-| `PATH_TELEMETRY` | `/telemetry` |
-| `PATH_TIME` | `/time` |
+- The destination hash **changes** when the identity changes. Keep the identity file safe.
+- After upgrading from a pre-LXMF version of RBloxx, re-paste all hashes (they changed).
 
-## Encoding
+To see a node's current destination hash:
+```bash
+sudo bash install/install_node.sh --show-hash
+```
 
-All request and response payloads are **msgpack** (`use_bin_type=True`). Strings are UTF-8. Missing optional fields are `null`/`None` (not omitted).
+The server's destination hash is printed in the log on startup, and shown in the UI under
+*Server info*.
 
 ---
 
-## Announce
+## Wire format
 
-Nodes announce themselves periodically (default every 300 seconds) using the RNS announce mechanism. The announce `app_data` field is a msgpack-encoded object:
+LXMF messages carry three user-accessible fields: `title`, `content`, and `fields` (a
+dict). RBloxx uses them as follows:
 
-```
-{
-  "hostname": str,   // system hostname
-  "version":  str    // agent version, e.g. "0.1.0"
-}
-```
+- **`content`** — the payload, always plain UTF-8 text. For commands this is the CLI line
+  (`svc restart rnsd`). For results it is the reply (`OK`, `OK: output text`, or
+  `ERR: message`). For telemetry and config reports it is the report verb line, optionally
+  followed by a newline and a multi-line body.
+- **`title`** — not used. Set to empty string. (Many LXMF clients, including MeshChat,
+  don't surface the title, so putting command text there would make manual operation
+  impossible.)
+- **`fields`** — used only for request/response correlation: `{"txn": "<hex uuid4>"}`.
+  One-way messages (telemetry, config snapshots) carry no `fields` at all.
 
-The server parses incoming announces and updates its node registry.
-
----
-
-## Node → Server: Telemetry push
-
-**Path:** `/telemetry` on the server destination
-
-**Direction:** node initiates a link to the server, then sends a request.
-
-### Request payload
-
-```
-{
-  "hostname":   str,
-  "version":    str,
-  "timestamp":  int,          // Unix epoch seconds
-
-  // System
-  "uptime_s":   int,
-  "cpu_pct":    float,        // 0.0 – 100.0
-  "ram_pct":    float,        // 0.0 – 100.0
-  "disk_pct":   float,        // 0.0 – 100.0
-  "temp_c":     float|null,   // CPU temperature, null if unavailable
-  "rns_rtt_ms": float|null,   // last NTP-style RTT to server, null until first sync
-
-  // Power (null if no power backend configured)
-  "batt_soc_pct":   float|null,   // 0.0 – 100.0
-  "batt_voltage_v": float|null,
-  "batt_power_w":   float|null,   // positive = charging, negative = discharging
-  "solar_power_w":  float|null,
-
-  // RNS interface totals
-  "rns_rxb":    int|null,     // total bytes received
-  "rns_txb":    int|null,     // total bytes transmitted
-  "rns_rxs":    int|null,     // packets received
-  "rns_txs":    int|null,     // packets transmitted
-
-  // Per-interface list
-  "interfaces": [
-    { "name": str, "rxb": int, "txb": int }
-  ] | null,
-
-  // RNode stats (populated when an RNodeInterface is present)
-  "rnode_airtime_short":      float|null,  // % airtime, short window
-  "rnode_airtime_long":       float|null,  // % airtime, long window
-  "rnode_channel_load_short": float|null,
-  "rnode_channel_load_long":  float|null,
-  "rnode_bitrate":            int|null,    // bits/s
-  "rnode_noise_floor":        float|null,  // dBm
-  "rnode_interference_dbm":   float|null,
-  "rnode_announce_in":        float|null,  // announces/s incoming
-  "rnode_announce_out":       float|null,  // announces/s outgoing
-  "rnode_held_announces":     int|null,
-
-  // Topology
-  "topology": {
-    "paths": [
-      {
-        "dest_hash": str,    // hex
-        "hops":      int,
-        "interface": str,
-        "bitrate":   int|null,
-        // present only for direct neighbors (hops == 1):
-        "rssi": float|null,  // dBm
-        "snr":  float|null   // dB
-      }
-    ]
-  },
-
-  // Active errors
-  "errors": [ str ]   // list of error code strings (see Error Codes section)
-}
-```
-
-### Response
-
-The server does not return a meaningful response body; the node ignores it.
+**Everything is human-readable plain text.** No msgpack, no binary encoding.
 
 ---
 
-## Node → Server: Time sync
+## Message types
 
-**Path:** `/time` on the server destination
+### Command (server → node)
 
-Uses an NTP-style four-timestamp exchange to compute clock offset and round-trip time. Runs on startup and every 12 hours (configurable via `time_sync_interval`).
-
-### Request payload
 ```
-{ "t1": int }   // node send time, nanoseconds (time.time_ns())
+content:  <CLI line>
+fields:   {"txn": "<hex uuid4>"}
 ```
 
-### Response payload
+The CLI line is the full command, e.g. `svc restart rnsd` or `set CR=7 SF=5`. The `txn`
+field lets the server correlate the reply that arrives on a separate inbound message.
+
+See [COMMANDS.md](COMMANDS.md) for the full command reference.
+
+### Result (node → server)
+
 ```
-{
-  "t2": int,    // server receive time, nanoseconds
-  "t3": int     // server send time, nanoseconds
-}
+content:  OK
+          OK: <output text>       (command produced text output)
+          ERR: <error message>    (command failed)
+fields:   {"txn": "<same hex uuid4>"}
 ```
 
-### Offset calculation (node side)
+The `txn` value echoes the one from the command, so the server can match it to the
+waiting request.
+
+### Telemetry report (node → server)
+
 ```
-t4     = time.time_ns()                    // node receive time
-offset = ((t2 - t1) + (t3 - t4)) / 2      // nanoseconds
-rtt_ms = ((t4 - t1) - (t3 - t2)) / 1e6   // milliseconds
+content:  tel <key>=<value>
+fields:   (none)
 ```
 
-If `|offset| > 500 ms`, the node corrects its system clock via `date -s`.
+One message per changed metric. Never batched. See [Telemetry model](#telemetry-model)
+below for the full key list and change rules.
+
+### Config snapshot (node → server)
+
+```
+content:  cfg <type>\n<file text>
+fields:   (none)
+```
+
+The node pushes a fresh snapshot of each config file on startup and after any
+`put_config`/`patch_config` change. `<type>` is `rns` or `agent`.
+
+### Announce
+
+Nodes announce via LXMF's own announce mechanism. The announce `app_data` is formatted
+by LXMF itself (`[display_name, stamp_cost]`), with `display_name` set to the node's
+current hostname. The server parses incoming announces with
+`LXMF.display_name_from_app_data()` and updates the node registry.
+
+The announce is the **liveness heartbeat** — the server's online/offline status derives
+from announce timing, not from telemetry arrival. "No telemetry for a while" simply
+means nothing changed, not that the node is dead.
 
 ---
 
-## Server → Node: Commands
+## Telemetry model
 
-**Path:** `/cmd` on the node destination
+Telemetry is **event-driven**: the agent polls metrics every `telemetry_poll_interval`
+seconds (default 10 s) and sends one `tel <key>=<value>` message per field that has
+changed enough to warrant a report. A metric is reported when it crosses its rule:
 
-**Direction:** server opens a link to the node, identifies itself, then sends a request. The node only accepts commands from identities it has previously seen as the server (cached after a successful telemetry push).
-
-### Authentication
-
-On every outbound link to a server, the node calls `link.identify()` to present its identity. The server's identity hash is cached in `trusted_server_identities`. Inbound `/cmd` requests from identities not in this set are rejected with `{"ok": false, "error": "not authorized"}`.
-
-### Request envelope
-```
-{
-  "cmd": str,    // command name (see below)
-  ...            // command-specific fields
-}
-```
-
-### Response envelope
-```
-{
-  "ok":     bool,
-  "error":  str,     // present on failure
-  "output": str,     // present for commands that return text
-  ...                // command-specific fields
-}
-```
-
----
-
-## Command Reference
-
-### Service control
-
-| Command | Extra fields | Description |
+| Rule class | Keys | Trigger |
 |---|---|---|
-| `svc_restart` | `"service": str` | `systemctl restart <service>` |
-| `svc_stop` | `"service": str` | `systemctl stop <service>` |
-| `svc_start` | `"service": str` | `systemctl start <service>` |
+| Event-like | `hostname`, `version`, `errors` | Any change, immediately |
+| Threshold + min-interval gauge | `cpu_pct`, `ram_pct`, `disk_pct`, `temp_c`, `batt_*`, `solar_*`, `rnode_noise_floor`, `rnode_interference_dbm`, `rnode_airtime_*`, `rnode_channel_load_*` | `abs(new - last) >= threshold` **and** ≥ `tel_update` s since last send |
+| Min-interval counter | `uptime_s`, `rns_rxb`, `rns_txb`, `rns_rxs`, `rns_txs`, `rnode_bitrate`, `rnode_announce_*`, `rnode_held_announces` | Any change, ≥ `tel_update` s since last send |
+| Topology | `path.<peer_hash>` | One message per peer whose path entry changed |
 
-Response: `{ "ok": bool, "output": str }`
+**Heartbeat cap**: regardless of the above rules, any metric that hasn't been sent in
+`tel_max_interval` seconds (default 300 s) is re-sent unconditionally. This bounds the
+maximum staleness visible in the UI even for stable metrics.
 
----
+`tel_update` (minimum resend interval) and `tel_max_interval` (heartbeat cap) are both
+runtime-configurable via `set` without restarting the agent.
 
-### Config management
+### Telemetry keys
 
-| Command | Extra fields | Description |
+| Key | Type | Description |
 |---|---|---|
-| `get_config` | `"type": str` | Read a config file; returns raw content |
-| `put_config` | `"type": str, "content": str` | Overwrite a config file (with rollback failsafe) |
-| `patch_config` | `"type": str, "patches": [...]` | Apply key-value patches to a config |
-
-Config types:
-
-| Type constant | File |
-|---|---|
-| `rns` | `/root/.reticulum/config` (Reticulum INI) |
-| `agent` | `/etc/rbloxx/agent.json` |
-| `system` | (reserved) |
-
-`put_config` writes to a staging path and restarts the relevant service. If the service fails to come back within the watchdog window, the agent rolls back to the previous file and reports `ERR_CONFIG_ROLLBACK`.
-
-`patch_config` patches format: `[{"section": str, "key": str, "value": str}, ...]`
-
-`get_config` response: `{ "ok": true, "content": str }`
-
----
-
-### Reboot / shutdown
-
-| Command | Extra fields | Description |
-|---|---|---|
-| `reboot` | `"delay_s": int` (default 5) | Schedule `systemctl reboot` |
-| `shutdown` | `"delay_s": int` (default 5) | Schedule `systemctl poweroff` |
-
----
-
-### Networking
-
-| Command | Extra fields | Description |
-|---|---|---|
-| `wifi_set` | `"enabled": bool, "profile": str\|null` | Enable/disable WiFi via `nmcli` |
-| `rns_announce` | — | Trigger an immediate RNS announce |
-| `connectivity_check` | `"dest_hash": str` | Open a link to `dest_hash`, return RTT |
-
-`connectivity_check` response: `{ "ok": bool, "rtt_ms": float|null }`
+| `hostname` | str | System hostname |
+| `version` | str | Agent version |
+| `uptime_s` | int | Seconds since boot |
+| `cpu_pct` | float | CPU usage 0–100 |
+| `ram_pct` | float | RAM usage 0–100 |
+| `disk_pct` | float | Root filesystem usage 0–100 |
+| `temp_c` | float | CPU temperature °C (null if unavailable) |
+| `batt_soc_pct` | float | Battery state of charge 0–100 |
+| `batt_voltage_v` | float | Battery voltage |
+| `batt_power_w` | float | Battery power (positive = charging) |
+| `solar_power_w` | float | Solar input power |
+| `rns_rxb` | int | Total bytes received by RNS |
+| `rns_txb` | int | Total bytes transmitted by RNS |
+| `rns_rxs` | int | Total packets received |
+| `rns_txs` | int | Total packets transmitted |
+| `rnode_airtime_short` | float | RNode airtime % (short window) |
+| `rnode_airtime_long` | float | RNode airtime % (long window) |
+| `rnode_channel_load_short` | float | Channel load % (short window) |
+| `rnode_channel_load_long` | float | Channel load % (long window) |
+| `rnode_bitrate` | int | Current bitrate bits/s |
+| `rnode_noise_floor` | float | Noise floor dBm |
+| `rnode_interference_dbm` | float | Interference level dBm |
+| `rnode_announce_in` | float | Incoming announce rate announces/s |
+| `rnode_announce_out` | float | Outgoing announce rate announces/s |
+| `rnode_held_announces` | int | Queued announces |
+| `path.<peer_hash>` | str | `<hops>,<iface>,<bitrate>,<rssi>,<snr>` |
+| `errors` | str | Comma-separated active error codes |
 
 ---
 
-### Diagnostics
+## Security model
 
-| Command | Extra fields | Description |
-|---|---|---|
-| `log_pull` | `"lines": int` (default 100), `"unit": str\|null` | Return `journalctl` output |
-| `disk_cleanup` | — | Run `journalctl --vacuum-time=7d` |
-| `agent_update` | — | `git pull` in the repo root, restart agent |
-
-`log_pull` response: `{ "ok": bool, "content": str }`
-
----
-
-### RNode hardware
-
-| Command | Extra fields | Description |
-|---|---|---|
-| `rnode_reset` | `"port": str` | Run `rnodeconf <port> --reset` |
-| `rnode_update` | `"port": str` | Run `rnodeconf <port> --update` (up to 5 min) |
-
----
-
-### Auto-shutdown threshold
-
-| Command | Extra fields | Description |
-|---|---|---|
-| `shutdown_threshold` | `"soc_pct": float` | Set in-memory battery SoC% shutdown threshold (0 = disabled). Does not persist across agent restarts. |
-
----
-
-## Error Codes
-
-Reported in the `errors` array of every telemetry payload.
-
-| Code | Trigger |
-|---|---|
-| `batt_critical` | Battery SoC ≤ threshold (default 10%) |
-| `batt_sensor_unavail` | Configured power backend failed to initialise or read |
-| `disk_full` | Root filesystem usage ≥ threshold (default 90%) |
-| `temp_critical` | CPU temperature ≥ threshold (default 80 °C) |
-| `config_apply_failed` | `put_config` service restart failed |
-| `config_rollback` | Config rolled back after failed restart |
-| `rnode_update_failed` | `rnodeconf --update` returned non-zero |
-| `rnode_usb_reset` | RNode stuck (zero traffic) — USB reset attempted |
-| `rnode_restart` | USB reset failed, rnsd restarted instead |
-| `fs_readonly` | Root filesystem mounted read-only |
-| `fs_errors` | I/O errors or ext4 errors seen in dmesg |
-| `oom_killed` | OOM killer fired (from journalctl, last 5 min) |
-| `watchdog_reboot` | Previous boot ended by hardware watchdog |
-| `no_peers` | (reserved) |
-| `interface_down` | (reserved) |
-| `load_high` | 1-min load average / CPU count ≥ threshold (default 2.0) |
-| `swap_high` | Swap usage ≥ threshold (default 80%) |
-| `no_charging` | Solar input present but battery power is negative (averaged over recent readings) |
+- **Signature validation**: both sides check `message.signature_validated` before
+  processing any inbound message. Unsigned or invalid-signature messages are silently
+  dropped.
+- **Source hash allowlist**: the node only executes commands from source hashes listed in
+  `server_dest_hashes` (in `agent.json`). The server only stores telemetry from source
+  hashes in its node registry. In both cases the hash comes from LXMF's cryptographically
+  verified `message.source_hash`, not from any self-reported field in the payload.
+- **Runtime trust management**: `trust <hash>` / `untrust <hash>` commands let a trusted
+  server update the node's `server_dest_hashes` list at runtime without editing
+  `agent.json` by hand. `untrust` refuses to remove the last remaining entry.
+- **Root context**: the agent runs as root. Issued commands execute with full system
+  privileges. Deploy nodes only in controlled physical environments.
+- **No extra encryption layer**: RNS/LXMF links are end-to-end encrypted using identity
+  public keys. No additional application-layer encryption is applied.
 
 ---
 
@@ -298,22 +190,25 @@ Reported in the `errors` array of every telemetry payload.
 {
   "identity_path":            "/etc/rbloxx/identity",
   "announce_interval":        300,
-  "time_sync_interval":       43200,
-  "server_dest_hashes":       ["<hex>"],
-  "trusted_server_identities": [],
+  "server_dest_hashes":       ["<hex dest hash of server>"],
   "rnode_ports":              ["/dev/ttyUSB0"],
   "shutdown_soc_pct":         0,
   "watchdog_feed_interval_s": 10,
-  "zero_traffic_minutes":     15,
+  "watchdog_timeout_s":       300,
+  "telemetry_poll_interval":  10,
+  "tel_update":               30,
+  "tel_max_interval":         300,
+  "rns_configdir":            "/etc/rbloxx/rns_agent",
   "power_backend":            "none",
   "power_i2c_bus":            1,
   "power_i2c_addr":           "0x40",
   "thresholds": {
-    "disk_full_pct":     90,
-    "temp_critical_c":   80,
-    "load_high_factor":  2.0,
-    "swap_high_pct":     80,
-    "batt_critical_pct": 10
+    "disk_full_pct":          90,
+    "temp_critical_c":        80,
+    "load_high_factor":       2.0,
+    "swap_high_pct":          80,
+    "batt_critical_pct":      10,
+    "zero_traffic_minutes":   15
   }
 }
 ```
@@ -321,35 +216,55 @@ Reported in the `errors` array of every telemetry payload.
 | Field | Default | Description |
 |---|---|---|
 | `identity_path` | `/etc/rbloxx/identity` | RNS identity file |
-| `announce_interval` | `300` | Seconds between announces and telemetry pushes |
-| `time_sync_interval` | `43200` | Seconds between NTP-style time sync attempts (12 h) |
-| `server_dest_hashes` | `[]` | Hex destination hashes of server(s) to push telemetry to |
-| `trusted_server_identities` | `[]` | Auto-populated; persisted across restarts if desired |
-| `rnode_ports` | `[]` | Serial ports monitored for stuck RNode (zero-traffic watchdog) |
-| `shutdown_soc_pct` | `0` | Auto-shutdown when battery SoC falls to this value; `0` = disabled |
-| `watchdog_feed_interval_s` | `10` | Interval for `/dev/watchdog` heartbeat |
-| `zero_traffic_minutes` | `15` | Minutes of zero RNode traffic before USB reset is attempted |
+| `announce_interval` | `300` | Seconds between LXMF announces |
+| `server_dest_hashes` | `[]` | Destination hashes of trusted server(s) |
+| `rnode_ports` | `[]` | Serial ports monitored for stuck RNode |
+| `shutdown_soc_pct` | `0` | Auto-shutdown when battery SoC ≤ this value; `0` = disabled |
+| `watchdog_feed_interval_s` | `10` | `/dev/watchdog` heartbeat interval |
+| `watchdog_timeout_s` | `300` | Config-rollback window after `put_config` (seconds) |
+| `telemetry_poll_interval` | `10` | How often to sample metrics (seconds) |
+| `tel_update` | `30` | Minimum seconds between re-sends of any one metric |
+| `tel_max_interval` | `300` | Force-resend interval even with no change (heartbeat cap) |
+| `rns_configdir` | `/etc/rbloxx/rns_agent` | RNS config dir for the standalone agent RNS instance |
 | `power_backend` | `none` | `none` / `ina226` / `ina219` |
-| `power_i2c_bus` | `1` | I²C bus number for power backend |
-| `power_i2c_addr` | `0x40` | I²C address for power backend |
+| `power_i2c_bus` | `1` | I²C bus for power backend |
+| `power_i2c_addr` | `"0x40"` | I²C address for power backend |
+
+---
+
+## Error codes
+
+Reported in `tel errors=<code1>,<code2>,...` whenever the active-errors set changes.
+
+| Code | Trigger |
+|---|---|
+| `batt_critical` | Battery SoC ≤ threshold (default 10%) |
+| `batt_sensor_unavail` | Power backend failed to initialise or read |
+| `disk_full` | Root filesystem usage ≥ threshold (default 90%) |
+| `temp_critical` | CPU temperature ≥ threshold (default 80 °C) |
+| `config_apply_failed` | `put_config` service restart failed |
+| `config_rollback` | Config rolled back after failed restart |
+| `rnode_update_failed` | `rnodeconf --update` returned non-zero |
+| `rnode_usb_reset` | RNode stuck (zero traffic) — USB reset attempted |
+| `rnode_restart` | USB reset failed, rnsd restarted instead |
+| `fs_readonly` | Root filesystem mounted read-only |
+| `fs_errors` | I/O or ext4 errors seen in dmesg |
+| `oom_killed` | OOM killer fired (journalctl, last 5 min) |
+| `watchdog_reboot` | Previous boot ended by hardware watchdog |
+| `load_high` | 1-min load average / CPU count ≥ threshold (default 2.0) |
+| `swap_high` | Swap usage ≥ threshold (default 80%) |
+| `no_charging` | Solar present but battery power is negative |
 
 ---
 
 ## RNode auto-recovery
 
-The agent monitors each port in `rnode_ports` once per minute. If byte counts (rx + tx) have not changed for `zero_traffic_minutes`:
+The agent monitors each port in `rnode_ports` once per minute. If byte counts (rx + tx)
+have not changed for `thresholds.zero_traffic_minutes` (default 15):
 
 1. Attempt `usbreset <port>` (USB level reset)
 2. Wait 5 seconds; check if the interface reappears in RNS stats
 3. If not recovered: `systemctl restart rnsd`
 
-Transient error codes `rnode_usb_reset` and `rnode_restart` are added to the next telemetry payload.
-
----
-
-## Security model
-
-- **Identity-based trust**: the server's RNS identity is the only credential. Any process that can establish an RNS link and identify as a known server identity can issue commands.
-- **Trust bootstrapping**: the node caches the server's identity hash after the first successful telemetry push (outbound link). Commands from unknown identities are rejected.
-- **No encryption layer above RNS**: RNS links are end-to-end encrypted by default using the identity's public key. No additional application-layer encryption is applied.
-- **Root context**: the agent runs as root; issued commands execute with full system privileges. Deploy nodes only in controlled environments.
+Transient error codes `rnode_usb_reset` / `rnode_restart` appear in the next telemetry
+error report and clear automatically on the following poll.
