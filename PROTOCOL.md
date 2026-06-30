@@ -120,7 +120,7 @@ changed enough to warrant a report. A metric is reported when it crosses its rul
 | Rule class | Keys | Trigger |
 |---|---|---|
 | Event-like | `hostname`, `version`, `errors` | Any change, immediately |
-| Threshold + min-interval gauge | `cpu_pct`, `ram_pct`, `disk_pct`, `temp_c`, `batt_*`, `solar_*`, `rnode_noise_floor`, `rnode_interference_dbm`, `rnode_airtime_*`, `rnode_channel_load_*` | `abs(new - last) >= threshold` **and** ≥ `tel_update` s since last send |
+| Threshold + min-interval gauge | `cpu_pct`, `ram_pct`, `disk_pct`, `temp_c`, `batt_*`, `solar_*`, `rnode_noise_floor`, `rnode_interference_dbm`, `rnode_airtime_*`, `rnode_channel_load_*`, `rns_rtt_ms` | `abs(new - last) >= threshold` **and** ≥ `tel_update` s since last send |
 | Min-interval counter | `uptime_s`, `rns_rxb`, `rns_txb`, `rns_rxs`, `rns_txs`, `rnode_bitrate`, `rnode_announce_*`, `rnode_held_announces` | Any change, ≥ `tel_update` s since last send |
 | Topology | `path.<peer_hash>` | One message per peer whose path entry changed |
 
@@ -164,8 +164,6 @@ runtime-configurable via `set` without restarting the agent.
 | `rns_rtt_ms` | float | Round-trip time to server in ms (updated after each timesync) |
 | `errors` | str | Comma-separated active error codes |
 
----
-
 ## Time sync
 
 The node runs NTP-style clock sync against each server (default every 12 hours, first
@@ -201,6 +199,8 @@ subject to the same threshold gate (5ms change) as other gauges.
 
 **`time_sync_interval`** in `agent.json` controls the repeat period (default 43200 s
 = 12h). There is no user-visible command to trigger a manual sync — add one if needed.
+
+---
 
 ## Security model
 

@@ -252,3 +252,10 @@ command that can lock the node out of remote administration.
 `tel <key>=<value>` and `cfg <type>` are real verbs in the same grammar, but
 they only ever flow *node → server* (telemetry reports and periodic config
 snapshots) — you'll see them arrive, never send them yourself.
+
+`timesync` is also internal — the node sends `timesync t1=<ns>` to the server
+automatically on a schedule (default every 12h), and the server replies with
+`timesync t1=<T1> t2=<T2> t3=<T3>`. The node uses the four timestamps to compute
+its clock offset (NTP-style) and applies a correction if the offset is ≥ 500ms.
+The resulting round-trip time appears in the UI as the `rns_rtt_ms` metric.
+See `PROTOCOL.md` for the full exchange diagram.
