@@ -161,9 +161,46 @@ runtime-configurable via `set` without restarting the agent.
 | `rnode_announce_out` | float | Outgoing announce rate announces/s |
 | `rnode_held_announces` | int | Queued announces |
 | `path.<peer_hash>` | str | `<hops>,<iface>,<bitrate>,<rssi>,<snr>` |
+| `rns_rtt_ms` | float | Round-trip time to server in ms (updated after each timesync) |
 | `errors` | str | Comma-separated active error codes |
 
 ---
+
+## Time sync
+
+The node runs NTP-style clock sync against each server (default every 12 hours, first
+sync ~90 seconds after startup). Four timestamps are exchanged:
+
+```
+Node                              Server
+ |                                  |
+ |-- timesync t1=<T1_ns> --------> |  T2 = server receive time
+ |                                  |  T3 = server send time
+ |<- timesync t1=<T1> t2=<T2_ns> t3=<T3_ns> --
+T4 = node receive time (now)       |
+```
+
+All timestamps are Unix nanoseconds (`time.time_ns()`).
+
+**Clock offset and RTT** computed on the node:
+```
+offset = ((T2 - T1) + (T3 - T4)) / 2     # nanoseconds
+rtt    = (T4 - T1) - (T3 - T2)            # nanoseconds
+```
+
+The reply echoes T1 so the node can verify it matches the most recent request (stale
+or duplicate replies are silently discarded).
+
+**Clock correction**: if `abs(offset) >= 500ms` and `abs(offset) <= 24h`, the node
+corrects its system clock via `date -s`. Offsets under 500ms are considered network
+jitter; offsets over 24h are more likely a misconfiguration than drift.
+
+**RTT telemetry**: after each sync, `rns_rtt_ms` is stored and picked up by the
+normal telemetry loop on the next poll, sent to the server as `tel rns_rtt_ms=<value>`
+subject to the same threshold gate (5ms change) as other gauges.
+
+**`time_sync_interval`** in `agent.json` controls the repeat period (default 43200 s
+= 12h). There is no user-visible command to trigger a manual sync — add one if needed.
 
 ## Security model
 
@@ -198,6 +235,7 @@ runtime-configurable via `set` without restarting the agent.
   "telemetry_poll_interval":  10,
   "tel_update":               30,
   "tel_max_interval":         300,
+  "time_sync_interval":       43200,
   "rns_configdir":            "/etc/rbloxx/rns_agent",
   "power_backend":            "none",
   "power_i2c_bus":            1,
@@ -225,6 +263,7 @@ runtime-configurable via `set` without restarting the agent.
 | `telemetry_poll_interval` | `10` | How often to sample metrics (seconds) |
 | `tel_update` | `30` | Minimum seconds between re-sends of any one metric |
 | `tel_max_interval` | `300` | Force-resend interval even with no change (heartbeat cap) |
+| `time_sync_interval` | `43200` | Seconds between NTP-style time sync attempts (12 h) |
 | `rns_configdir` | `/etc/rbloxx/rns_agent` | RNS config dir for the standalone agent RNS instance |
 | `power_backend` | `none` | `none` / `ina226` / `ina219` |
 | `power_i2c_bus` | `1` | I²C bus for power backend |

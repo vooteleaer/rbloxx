@@ -46,6 +46,7 @@ TELEMETRY_THRESHOLDS = {
     "rnode_noise_floor": 1.0, "rnode_interference_dbm": 1.0,
     "rnode_airtime_short": 1.0, "rnode_airtime_long": 1.0,
     "rnode_channel_load_short": 1.0, "rnode_channel_load_long": 1.0,
+    "rns_rtt_ms": 5.0,
 }
 # Monotonic counters: any change counts, rate-limited to telemetry_min_interval.
 TELEMETRY_COUNTER_KEYS = {
@@ -73,6 +74,14 @@ class RBloxxAgent:
         self.telemetry_max_interval: float = self.cfg.get("tel_max_interval", TELEMETRY_MAX_INTERVAL_DEFAULT)
         self.server_dest_hashes: list[str] = self.cfg.get("server_dest_hashes", [])
         self.shutdown_soc_pct: float = self.cfg.get("shutdown_soc_pct", 0)
+        self.time_sync_interval: int = self.cfg.get("time_sync_interval", 43200)
+        # Pending timesync: dest_hash_hex -> T1 nanoseconds sent in last request.
+        # Used to correlate the server's reply (which echoes T1 back) with the
+        # outgoing request, so stale/duplicate replies are silently ignored.
+        self._pending_timesync: dict[str, int] = {}
+        # Last measured RTT from the timesync exchange -- fed into _collect_telemetry
+        # so it flows through the normal threshold-gated telemetry loop.
+        self._last_rns_rtt_ms: float | None = None
         # NomadNet status page: the real `nomadnet` daemon owns the RNS side
         # (its own nomadnetwork.node destination, announces, Link handling --
         # all the production-tested protocol code). This agent just answers
@@ -129,6 +138,7 @@ class RBloxxAgent:
         threading.Thread(target=self._watchdog_loop, daemon=True, name="watchdog").start()
         threading.Thread(target=self._rnode_monitor_loop, daemon=True, name="rnode-monitor").start()
         threading.Thread(target=self._telemetry_loop, daemon=True, name="telemetry-loop").start()
+        threading.Thread(target=self._timesync_loop, daemon=True, name="timesync").start()
         threading.Thread(target=self._main_loop, daemon=True, name="main-loop").start()
         if self.nomadnet_enabled:
             threading.Thread(target=self._nomadnet_socket_loop, daemon=True, name="nomadnet-socket").start()
@@ -334,9 +344,103 @@ class RBloxxAgent:
             "temp_c": sys_info.get("temp_c"),
             "batt_soc_pct": power_info.get("batt_soc_pct"),
             "batt_power_w": power_info.get("batt_power_w"),
+            # Populated by _handle_timesync_reply after each timesync exchange.
+            # None until the first sync completes (filtered out by the caller).
+            "rns_rtt_ms": self._last_rns_rtt_ms,
         }
 
         return host_tel, rnode_tel if rnode_tel else None
+
+    # ------------------------------------------------------------------
+    # NTP-style time sync over LXMF (node initiates, server replies)
+    # ------------------------------------------------------------------
+
+    def _timesync_loop(self) -> None:
+        # Short delay on startup: wait for the main loop to establish a path
+        # to at least one server before sending the first timesync request.
+        self._sleep_interruptible(90)
+        while self._running:
+            try:
+                for dest_hash_hex in self.server_dest_hashes:
+                    self._request_timesync(dest_hash_hex)
+            except Exception as e:
+                RNS.log(f"Timesync loop error: {e}", RNS.LOG_WARNING)
+            self._sleep_interruptible(self.time_sync_interval)
+
+    def _request_timesync(self, dest_hash_hex: str) -> None:
+        """Send a timesync request: `timesync t1=<nanoseconds>`."""
+        t1 = time.time_ns()
+        self._pending_timesync[dest_hash_hex] = t1
+        self._send_lxm(dest_hash_hex, content=f"timesync t1={t1}".encode("utf-8"))
+
+    def _handle_timesync_reply(self, server_hash: str, line: str) -> None:
+        """Process `timesync t1=<T1> t2=<T2> t3=<T3>` from the server.
+
+        NTP four-timestamp exchange:
+          T1 = node send time (nanoseconds)
+          T2 = server receive time
+          T3 = server send time
+          T4 = node receive time (now)
+
+        clock offset  = ((T2 - T1) + (T3 - T4)) / 2
+        round-trip    = (T4 - T1) - (T3 - T2)
+        """
+        t4 = time.time_ns()
+
+        # Parse "timesync t1=<ns> t2=<ns> t3=<ns>"
+        params: dict[str, int] = {}
+        for part in line.split()[1:]:
+            k, _, v = part.partition("=")
+            try:
+                params[k] = int(v)
+            except ValueError:
+                pass
+
+        t1_reply = params.get("t1")
+        t2 = params.get("t2")
+        t3 = params.get("t3")
+        t1_sent = self._pending_timesync.get(server_hash)
+
+        if t1_sent is None or t1_reply is None or t2 is None or t3 is None:
+            return
+        if t1_reply != t1_sent:
+            # Stale reply from a previous timesync cycle — discard.
+            return
+
+        self._pending_timesync.pop(server_hash, None)
+
+        offset_ns = ((t2 - t1_sent) + (t3 - t4)) // 2
+        rtt_ns = (t4 - t1_sent) - (t3 - t2)
+        offset_ms = offset_ns / 1_000_000
+        rtt_ms = rtt_ns / 1_000_000
+
+        RNS.log(
+            f"Timesync with {server_hash[:12]}: offset={offset_ms:+.1f}ms RTT={rtt_ms:.1f}ms",
+            RNS.LOG_DEBUG,
+        )
+
+        # Apply clock correction when offset is large enough to matter but
+        # small enough to not indicate a wildly wrong clock (> 24h difference
+        # is more likely a configuration issue than network drift).
+        CORRECTION_THRESHOLD_MS = 500.0
+        MAX_CORRECTION_MS = 86_400_000.0
+        if CORRECTION_THRESHOLD_MS <= abs(offset_ms) <= MAX_CORRECTION_MS:
+            corrected = time.time() + offset_ns / 1e9
+            r = subprocess.run(
+                ["date", "-s", f"@{corrected:.6f}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                RNS.log(f"Clock corrected by {offset_ms:+.0f}ms", RNS.LOG_NOTICE)
+            else:
+                RNS.log(
+                    f"Clock correction failed: {(r.stdout + r.stderr).strip()}",
+                    RNS.LOG_WARNING,
+                )
+
+        # Store RTT so _collect_telemetry picks it up on the next poll cycle
+        # and sends it through the normal threshold-gated telemetry loop.
+        self._last_rns_rtt_ms = round(rtt_ms, 2)
 
     def _get_rnsd_authkey(self) -> bytes | None:
         """Compute the RPC authkey from rnsd's transport identity file.
@@ -665,6 +769,12 @@ class RBloxxAgent:
         cli_line = cli_line.strip()
         payload = rest.encode("utf-8")
         txn = (message.fields or {}).get(FIELD_TXN, "")
+
+        # Timesync reply (server → node): `timesync t1=<T1> t2=<T2> t3=<T3>`.
+        # Not a command — don't dispatch to _execute_and_respond.
+        if cli_line.startswith("timesync "):
+            self._handle_timesync_reply(server_hash, cli_line)
+            return
 
         threading.Thread(
             target=self._execute_and_respond,

@@ -172,8 +172,50 @@ def _handle_lxm(message: "LXMF.LXMessage") -> None:
         cfg_type = line[4:].strip()
         if _loop:
             asyncio.run_coroutine_threadsafe(_store_config_snapshot(node_hash, cfg_type, rest), _loop)
+    elif line.startswith("timesync t1="):
+        _handle_timesync(node_hash, line)
     else:
         RNS.log(f"Unrecognized message from {node_hash[:12]}: {line!r}", RNS.LOG_WARNING)
+
+
+# ------------------------------------------------------------------
+# Time sync (NTP-style, node-initiated)
+# ------------------------------------------------------------------
+
+def _handle_timesync(node_hash: str, line: str) -> None:
+    """Receive `timesync t1=<T1_ns>` from a node, reply with T1+T2+T3.
+
+    Records T2 immediately on receive and T3 just before sending, then fires
+    the reply back via LXMF. The node uses the four timestamps to compute its
+    clock offset and round-trip time (see NTP RFC 5905 §8).
+    """
+    t2 = time.time_ns()
+    t1_str = line.removeprefix("timesync t1=").strip()
+    try:
+        t1 = int(t1_str)
+    except ValueError:
+        RNS.log(f"Malformed timesync from {node_hash[:12]}: {line!r}", RNS.LOG_WARNING)
+        return
+    t3 = time.time_ns()
+    reply = f"timesync t1={t1} t2={t2} t3={t3}"
+    _send_to_node(node_hash, reply.encode("utf-8"))
+
+
+def _send_to_node(node_dest_hash: str, content: bytes) -> None:
+    """Send a one-way LXMF message to a node (not a command — no txn field)."""
+    if _dest is None or _router is None:
+        return
+    identity = RNS.Identity.recall(bytes.fromhex(node_dest_hash))
+    if identity is None:
+        return
+    node_dest = RNS.Destination(
+        identity, RNS.Destination.OUT, RNS.Destination.SINGLE, "lxmf", "delivery",
+    )
+    lxm = LXMF.LXMessage(
+        node_dest, _dest, content,
+        fields={}, desired_method=LXMF.LXMessage.OPPORTUNISTIC,
+    )
+    _router.handle_outbound(lxm)
 
 
 # ------------------------------------------------------------------

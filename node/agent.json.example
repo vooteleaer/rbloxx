@@ -8,6 +8,7 @@
   "rns_config_path": "~/.reticulum/config",
   "telemetry_poll_interval": 10,
   "tel_update": 30,
+  "time_sync_interval": 43200,
   "thresholds": {
     "batt_critical_pct": 10,
     "disk_full_pct": 90,
