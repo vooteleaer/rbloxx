@@ -47,8 +47,10 @@ export function parse(text: string): RnsConfig {
       continue;
     }
 
-    // Key = value
-    const kvMatch = line.match(/^[ \t]+([^=]+?)\s*=\s*(.*)/);
+    // Key = value -- RNS's own parser doesn't require indentation under a
+    // section/interface header, so this can't require it either (real
+    // configs are sometimes written/edited without the usual 2-space style).
+    const kvMatch = line.match(/^[ \t]*([^=]+?)\s*=\s*(.*)/);
     if (!kvMatch) continue;
     const key = kvMatch[1].trim();
     const value = kvMatch[2].trim();

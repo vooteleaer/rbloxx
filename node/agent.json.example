@@ -1,11 +1,13 @@
 {
-  "identity_path": "/etc/bloxx/identity",
+  "identity_path": "/etc/rbloxx/identity",
   "announce_interval": 300,
   "server_dest_hashes": [
     "aabbccddeeff0011223344556677889900aabbccddeeff0011223344556677889900"
   ],
   "trusted_server_identities": [],
   "rns_config_path": "~/.reticulum/config",
+  "telemetry_poll_interval": 10,
+  "tel_update": 30,
   "thresholds": {
     "batt_critical_pct": 10,
     "disk_full_pct": 90,

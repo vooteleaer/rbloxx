@@ -18,8 +18,10 @@ export const api = {
   nodes: {
     list: () => req<Node[]>("/nodes"),
     get: (hash: string) => req<Node>(`/nodes/${hash}`),
-    telemetry: (hash: string, limit = 100) =>
-      req<TelemetryRow[]>(`/nodes/${hash}/telemetry?limit=${limit}`),
+    telemetry: (hash: string, limit = 100, since?: number) =>
+      req<TelemetryRow[]>(
+        `/nodes/${hash}/telemetry?limit=${limit}${since != null ? `&since=${since}` : ""}`,
+      ),
     add: (destHash: string, label?: string) =>
       req<Node>("/nodes", {
         method: "POST",

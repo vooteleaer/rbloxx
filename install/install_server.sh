@@ -1,11 +1,11 @@
 #!/bin/bash
 set -e
 
-BLOXX_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BACKEND_DIR="$BLOXX_DIR/server/backend"
-FRONTEND_DIR="$BLOXX_DIR/server/frontend"
+RBLOXX_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BACKEND_DIR="$RBLOXX_DIR/server/backend"
+FRONTEND_DIR="$RBLOXX_DIR/server/frontend"
 
-echo "=== Bloxx server installer ==="
+echo "=== RBloxx server installer ==="
 
 # Backend venv
 python3 -m venv "$BACKEND_DIR/.venv"
@@ -16,36 +16,36 @@ cd "$FRONTEND_DIR"
 npm install --silent
 npm run build
 
-mkdir -p /etc/bloxx
-mkdir -p /var/lib/bloxx
+mkdir -p /etc/rbloxx
+mkdir -p /var/lib/rbloxx
 
 # Systemd service
-cat > /etc/systemd/system/bloxx-server.service << EOF
+cat > /etc/systemd/system/rbloxx-server.service << EOF
 [Unit]
-Description=Bloxx Server
+Description=RBloxx Server
 After=network.target rnsd.service
 
 [Service]
-ExecStart=$BACKEND_DIR/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+ExecStart=$BACKEND_DIR/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 80
 Restart=on-failure
 User=root
 WorkingDirectory=$BACKEND_DIR
-Environment=BLOXX_DB=/var/lib/bloxx/bloxx.db
+Environment=RBLOXX_DB=/var/lib/rbloxx/rbloxx.db
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable bloxx-server
-systemctl start bloxx-server
+systemctl enable rbloxx-server
+systemctl start rbloxx-server
 
 echo ""
-echo "Server running on port 8000"
+echo "Server running on port 80"
 echo "Server destination hash (add this to agent.json on each node):"
 SERVER_DEST_HASH=$("$BACKEND_DIR/.venv/bin/python" -c "
 import sys; sys.path.insert(0, '$BACKEND_DIR')
-import os; os.environ.setdefault('BLOXX_DB', '/var/lib/bloxx/bloxx.db')
+import os; os.environ.setdefault('RBLOXX_DB', '/var/lib/rbloxx/rbloxx.db')
 import rns_service, RNS
 RNS.Reticulum(require_shared_instance=True)
 rns_service.init()
@@ -68,11 +68,11 @@ if [ "${1}" = "--with-agent" ] || { [ -t 0 ] && read -r -p "Also install local n
     echo "Installing local node agent..."
     bash "$(dirname "$0")/install_node.sh"
     echo ""
-    echo "IMPORTANT: Edit /etc/bloxx/agent.json and set:"
+    echo "IMPORTANT: Edit /etc/rbloxx/agent.json and set:"
     if [ -n "$SERVER_DEST_HASH" ]; then
         echo "  \"server_dest_hashes\": [\"$SERVER_DEST_HASH\"]"
     else
         echo "  \"server_dest_hashes\": [\"<this server's dest_hash from above>\"]"
     fi
-    echo "Then: systemctl start bloxx-agent"
+    echo "Then: systemctl start rbloxx-agent"
 fi

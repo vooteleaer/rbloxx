@@ -2,7 +2,7 @@
 set -e
 
 start_rnsd() {
-    echo "[bloxx] Starting rnsd..."
+    echo "[rbloxx] Starting rnsd..."
     rnsd &
     RNSD_PID=$!
 }
@@ -15,19 +15,19 @@ rns_ready() {
 
 start_rnsd
 
-echo "[bloxx] Waiting for rnsd shared instance..."
+echo "[rbloxx] Waiting for rnsd shared instance..."
 WAIT=0
 until rns_ready; do
     sleep 1
     WAIT=$((WAIT + 1))
     if [ $WAIT -ge 120 ]; then
-        echo "[bloxx] rnsd not ready after 120s, restarting..."
+        echo "[rbloxx] rnsd not ready after 120s, restarting..."
         kill -9 $RNSD_PID 2>/dev/null || true
         start_rnsd
         WAIT=0
     fi
 done
-echo "[bloxx] rnsd ready"
+echo "[rbloxx] rnsd ready"
 
 # ------------------------------------------------------------------
 # Bootstrap local node agent
@@ -35,7 +35,7 @@ echo "[bloxx] rnsd ready"
 # at the server's own dest hash, then start the agent in background.
 # ------------------------------------------------------------------
 
-mkdir -p /etc/bloxx
+mkdir -p /etc/rbloxx
 
 SERVER_HASH=$(python3 - 2>/dev/null <<'PYEOF'
 import sys, os
@@ -54,7 +54,7 @@ if hasattr(RNS.Reticulum, "_used_destination_data"):
     RNS.Reticulum._used_destination_data = _safe
 
 RNS.Reticulum(require_shared_instance=True, loglevel=0)
-identity_path = Path('/etc/bloxx/server_identity')
+identity_path = Path('/etc/rbloxx/server_identity')
 if identity_path.exists():
     identity = RNS.Identity.from_file(str(identity_path))
 else:
@@ -73,8 +73,8 @@ if [ -n "$SERVER_HASH" ]; then
     # _used_destination_data and causes the agent thread to go silent.
     # ------------------------------------------------------------------
     RNSD_LOCAL_PORT="${RNSD_LOCAL_PORT:-4965}"
-    mkdir -p /etc/bloxx/rns_agent
-    cat > /etc/bloxx/rns_agent/config <<EOF
+    mkdir -p /etc/rbloxx/rns_agent
+    cat > /etc/rbloxx/rns_agent/config <<EOF
 [reticulum]
   enable_transport = False
   share_instance = No
@@ -93,10 +93,10 @@ EOF
 
     # Write agent.json only if absent or server_dest_hashes is empty/placeholder
     NEEDS_WRITE=1
-    if [ -f /etc/bloxx/agent.json ]; then
+    if [ -f /etc/rbloxx/agent.json ]; then
         if python3 -c "
 import json, sys
-c = json.load(open('/etc/bloxx/agent.json'))
+c = json.load(open('/etc/rbloxx/agent.json'))
 hashes = c.get('server_dest_hashes', [])
 sys.exit(0 if hashes and hashes[0] not in ('', 'YOUR_SERVER_DEST_HASH') else 1)
 " 2>/dev/null; then
@@ -105,12 +105,12 @@ sys.exit(0 if hashes and hashes[0] not in ('', 'YOUR_SERVER_DEST_HASH') else 1)
     fi
 
     if [ "$NEEDS_WRITE" = "1" ]; then
-        echo "[bloxx] Writing local agent config (server hash: $SERVER_HASH)"
-        cat > /etc/bloxx/agent.json <<EOF
+        echo "[rbloxx] Writing local agent config (server hash: $SERVER_HASH)"
+        cat > /etc/rbloxx/agent.json <<EOF
 {
   "server_dest_hashes": ["$SERVER_HASH"],
-  "identity_path": "/etc/bloxx/agent_identity",
-  "rns_configdir": "/etc/bloxx/rns_agent",
+  "identity_path": "/etc/rbloxx/agent_identity",
+  "rns_configdir": "/etc/rbloxx/rns_agent",
   "announce_interval": 60
 }
 EOF
@@ -118,19 +118,19 @@ EOF
         # Existing agent.json — ensure rns_configdir is set
         python3 -c "
 import json
-path = '/etc/bloxx/agent.json'
+path = '/etc/rbloxx/agent.json'
 c = json.load(open(path))
 if 'rns_configdir' not in c:
-    c['rns_configdir'] = '/etc/bloxx/rns_agent'
+    c['rns_configdir'] = '/etc/rbloxx/rns_agent'
     json.dump(c, open(path, 'w'), indent=2)
 " 2>/dev/null || true
     fi
 
-    echo "[bloxx] Starting local node agent..."
-    python3 /app/node/bloxx_agent.py /etc/bloxx/agent.json &
+    echo "[rbloxx] Starting local node agent..."
+    python3 /app/node/rbloxx_agent.py /etc/rbloxx/agent.json &
     AGENT_PID=$!
 else
-    echo "[bloxx] Warning: could not compute server hash — local agent skipped"
+    echo "[rbloxx] Warning: could not compute server hash — local agent skipped"
     AGENT_PID=""
 fi
 
@@ -141,23 +141,23 @@ fi
         # Reap any zombie children so kill -0 reflects actual liveness
         wait -n 2>/dev/null || true
         if ! kill -0 "$RNSD_PID" 2>/dev/null || [ "$(cat /proc/$RNSD_PID/status 2>/dev/null | grep '^State:' | awk '{print $2}')" = "Z" ]; then
-            echo "[bloxx-wd] rnsd died, restarting..."
+            echo "[rbloxx-wd] rnsd died, restarting..."
             rnsd &
             RNSD_PID=$!
             WAIT=0
             until rns_ready || [ $WAIT -ge 60 ]; do
                 sleep 1; WAIT=$((WAIT + 1))
             done
-            echo "[bloxx-wd] rnsd restarted (PID $RNSD_PID)"
+            echo "[rbloxx-wd] rnsd restarted (PID $RNSD_PID)"
         fi
         if [ -n "$AGENT_PID" ] && { ! kill -0 "$AGENT_PID" 2>/dev/null || [ "$(cat /proc/$AGENT_PID/status 2>/dev/null | grep '^State:' | awk '{print $2}')" = "Z" ]; }; then
-            echo "[bloxx-wd] agent died, restarting..."
-            python3 /app/node/bloxx_agent.py /etc/bloxx/agent.json &
+            echo "[rbloxx-wd] agent died, restarting..."
+            python3 /app/node/rbloxx_agent.py /etc/rbloxx/agent.json &
             AGENT_PID=$!
-            echo "[bloxx-wd] agent restarted (PID $AGENT_PID)"
+            echo "[rbloxx-wd] agent restarted (PID $AGENT_PID)"
         fi
     done
 ) &
 
-echo "[bloxx] Starting Bloxx server..."
-exec uvicorn main:app --host 0.0.0.0 --port 8200 --workers 1
+echo "[rbloxx] Starting RBloxx server..."
+exec uvicorn main:app --host 0.0.0.0 --port 80 --workers 1

@@ -47,8 +47,8 @@ The script will:
 4. Ask for the RNode frequency band if an RNode is found
 5. Write `/root/.reticulum/config` with the detected interface
 6. On Raspberry Pi: disable the serial console (frees up `ttyAMA0`/`serial0` for RNode) and enable the hardware watchdog
-7. Create the node identity at `/etc/bloxx/identity`
-8. Set up and start `rnsd` and `bloxx-agent` systemd services
+7. Create the node identity at `/etc/rbloxx/identity`
+8. Set up and start `rnsd` and `rbloxx-agent` systemd services
 9. Print the **node destination hash** — paste this into the RBloxx server UI
 
 ### Adding the node to the server
@@ -67,7 +67,7 @@ sudo bash install/install_node.sh --show-hash
 
 ### Set the server destination hash
 
-Edit `/etc/bloxx/agent.json` and fill in `server_dest_hashes`:
+Edit `/etc/rbloxx/agent.json` and fill in `server_dest_hashes`:
 
 ```json
 {
@@ -78,7 +78,7 @@ Edit `/etc/bloxx/agent.json` and fill in `server_dest_hashes`:
 
 Then restart the agent:
 ```bash
-sudo systemctl restart bloxx-agent
+sudo systemctl restart rbloxx-agent
 ```
 
 ---
@@ -88,7 +88,7 @@ sudo systemctl restart bloxx-agent
 ```
 rbloxx/
 ├── node/               Node agent (Python)
-│   ├── bloxx_agent.py
+│   ├── rbloxx_agent.py
 │   ├── config_handler.py
 │   ├── power_handler.py
 │   └── system_handler.py

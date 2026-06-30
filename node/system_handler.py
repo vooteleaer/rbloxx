@@ -95,6 +95,41 @@ def _cpu_temp() -> float | None:
             return int(tz.read_text().strip()) / 1000.0
     except Exception:
         pass
+    return _hwmon_cpu_temp()
+
+
+def _hwmon_cpu_temp() -> float | None:
+    """Fallback for machines with no /sys/class/thermal zone (most x86
+    desktops/servers expose CPU temp via hwmon's coretemp/k10temp instead).
+    """
+    try:
+        hwmon_root = Path("/sys/class/hwmon")
+        if not hwmon_root.exists():
+            return None
+        for dev in sorted(hwmon_root.iterdir()):
+            name_file = dev / "name"
+            if not name_file.exists():
+                continue
+            if name_file.read_text().strip().lower() not in ("coretemp", "k10temp", "zenpower"):
+                continue
+            # Prefer an overall package/die reading over a single core's.
+            best = None
+            for label_file in sorted(dev.glob("temp*_label")):
+                label = label_file.read_text().strip().lower()
+                input_file = dev / label_file.name.replace("_label", "_input")
+                if not input_file.exists():
+                    continue
+                if "package" in label or "tdie" in label:
+                    best = input_file
+                    break
+                best = best or input_file
+            if best is None:
+                inputs = sorted(dev.glob("temp*_input"))
+                best = inputs[0] if inputs else None
+            if best is not None:
+                return int(best.read_text().strip()) / 1000.0
+    except Exception:
+        pass
     return None
 
 
@@ -207,7 +242,7 @@ class SystemHandler:
         return []
 
     def _check_watchdog_reboot(self) -> list[str]:
-        flag = Path("/run/bloxx_watchdog_reboot")
+        flag = Path("/run/rbloxx_watchdog_reboot")
         if flag.exists():
             flag.unlink(missing_ok=True)
             return [ERR_WATCHDOG_REBOOT]

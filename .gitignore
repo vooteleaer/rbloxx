@@ -11,13 +11,13 @@ server/frontend/.vite/
 
 # Secrets / runtime state
 .env
-/etc/bloxx/
+/etc/rbloxx/
 identity
 *.identity
 server_identity
 
 # Backups
-*.bloxx_backup
+*.rbloxx_backup
 
 # OS / editor
 .DS_Store

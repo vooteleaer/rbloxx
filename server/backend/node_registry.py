@@ -6,7 +6,7 @@ import time
 
 import aiosqlite
 
-DB_PATH = os.environ.get("BLOXX_DB", "bloxx.db")
+DB_PATH = os.environ.get("RBLOXX_DB", "rbloxx.db")
 
 CREATE_NODES = """
 CREATE TABLE IF NOT EXISTS nodes (
@@ -116,6 +116,12 @@ async def init_db(db_path: str = DB_PATH) -> None:
         await db.commit()
 
 
+async def node_exists(dest_hash: str, db_path: str = DB_PATH) -> bool:
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute("SELECT 1 FROM nodes WHERE dest_hash = ?", (dest_hash,)) as cur:
+            return await cur.fetchone() is not None
+
+
 async def upsert_node(dest_hash: str, data: dict, db_path: str = DB_PATH) -> None:
     now = time.time()
     # Allow callers to force last_seen=0 so the node starts offline (e.g. pre-registration)
@@ -205,12 +211,23 @@ async def get_node(dest_hash: str, announce_interval: int = 300, db_path: str = 
     return {**dict(row), "online": row["last_seen"] > offline_threshold, "last_errors": json.loads(row["last_errors"])}
 
 
-async def get_telemetry(dest_hash: str, limit: int = 100, db_path: str = DB_PATH) -> list[dict]:
+async def get_telemetry(
+    dest_hash: str, limit: int = 100, since: float | None = None, db_path: str = DB_PATH,
+) -> list[dict]:
+    """`since` (unix seconds), when given, returns every row at or after that
+    time (up to `limit` as a safety cap) instead of just the last N rows --
+    callers selecting a fixed time window (e.g. "last 1h") want every sample
+    in that window, not a row count that fast-changing metrics will dominate.
+    """
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("""
-            SELECT * FROM telemetry WHERE dest_hash = ? ORDER BY ts DESC LIMIT ?
-        """, (dest_hash, limit)) as cur:
+        if since is not None:
+            query = "SELECT * FROM telemetry WHERE dest_hash = ? AND ts >= ? ORDER BY ts DESC LIMIT ?"
+            params = (dest_hash, since, limit)
+        else:
+            query = "SELECT * FROM telemetry WHERE dest_hash = ? ORDER BY ts DESC LIMIT ?"
+            params = (dest_hash, limit)
+        async with db.execute(query, params) as cur:
             rows = await cur.fetchall()
     return [
         {**dict(r), "interfaces": json.loads(r["interfaces"] or "null"), "errors": json.loads(r["errors"])}

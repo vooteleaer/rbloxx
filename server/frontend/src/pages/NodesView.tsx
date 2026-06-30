@@ -9,6 +9,7 @@ export default function NodesView() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [serverDestHash, setServerDestHash] = useState<string>("");
   const [liveTelemetry, setLiveTelemetry] = useState<Record<string, Record<string, unknown>>>({});
+  const [announceFlash, setAnnounceFlash] = useState<Record<string, number>>({});
   const [showAddModal, setShowAddModal] = useState(false);
   const [addHash, setAddHash] = useState("");
   const [addName, setAddName] = useState("");
@@ -51,24 +52,24 @@ export default function NodesView() {
           setLiveTelemetry((prev) => ({ ...prev, [hash]: d }));
           setNodes((prev) => {
             const idx = prev.findIndex((n) => n.dest_hash === hash);
-            const patch = {
-              hostname: d.hostname ?? undefined,
-              version: d.version ?? undefined,
-              last_errors: Array.isArray(d.errors) ? d.errors : [],
-              last_seen: Date.now() / 1000,
-              online: true,
-            };
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = { ...next[idx], ...patch };
-              return next;
-            }
-            return prev;
+            if (idx < 0) return prev;
+            // Each telemetry event now carries only the one metric that changed
+            // (event-driven reporting) -- only patch fields actually present in
+            // this message, or hostname/version/errors would get wiped back to
+            // blank on every unrelated metric update.
+            const patch: Record<string, unknown> = { last_seen: Date.now() / 1000, online: true };
+            if (d.hostname != null) patch.hostname = d.hostname;
+            if (d.version != null) patch.version = d.version;
+            if (Array.isArray(d.errors)) patch.last_errors = d.errors;
+            const next = [...prev];
+            next[idx] = { ...next[idx], ...patch };
+            return next;
           });
         }
 
         if (msg.type === "announce" && msg.data) {
           const d = msg.data;
+          setAnnounceFlash((prev) => ({ ...prev, [hash]: Date.now() }));
           setNodes((prev) => {
             const idx = prev.findIndex((n) => n.dest_hash === hash);
             const patch = {
@@ -183,6 +184,7 @@ export default function NodesView() {
               isServer={node.dest_hash === serverDestHash}
               onSelect={() => selectOnly(node.dest_hash)}
               onToggle={() => toggleSelect(node.dest_hash)}
+              lastAnnounce={announceFlash[node.dest_hash]}
             />
           ))}
         </div>

@@ -1,4 +1,4 @@
-"""Bloxx server — FastAPI application entry point."""
+"""RBloxx server — FastAPI application entry point."""
 
 import asyncio
 import json
@@ -18,7 +18,7 @@ from routers import nodes as nodes_router
 from routers import config as config_router
 from routers import topology as topology_router
 
-RETENTION_DAYS = int(os.environ.get("BLOXX_RETENTION_DAYS", "30"))
+RETENTION_DAYS = int(os.environ.get("RBLOXX_RETENTION_DAYS", "30"))
 
 
 class _WSManager:
@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bloxx", lifespan=lifespan)
+app = FastAPI(title="RBloxx", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

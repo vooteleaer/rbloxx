@@ -8,8 +8,8 @@ Every participant is identified by an RNS destination hash, derived from the ide
 
 | Role | App name | Aspect | Listens on |
 |---|---|---|---|
-| Server | `bloxx` | `server` | `PATH_TELEMETRY`, `PATH_TIME` |
-| Node agent | `bloxx` | `node` | `PATH_CMD` |
+| Server | `rbloxx` | `server` | `PATH_TELEMETRY`, `PATH_TIME` |
+| Node agent | `rbloxx` | `node` | `PATH_CMD` |
 
 ### Request paths
 
@@ -204,7 +204,7 @@ Config types:
 | Type constant | File |
 |---|---|
 | `rns` | `/root/.reticulum/config` (Reticulum INI) |
-| `agent` | `/etc/bloxx/agent.json` |
+| `agent` | `/etc/rbloxx/agent.json` |
 | `system` | (reserved) |
 
 `put_config` writes to a staging path and restarts the relevant service. If the service fails to come back within the watchdog window, the agent rolls back to the previous file and reports `ERR_CONFIG_ROLLBACK`.
@@ -292,11 +292,11 @@ Reported in the `errors` array of every telemetry payload.
 
 ---
 
-## Agent config (`/etc/bloxx/agent.json`)
+## Agent config (`/etc/rbloxx/agent.json`)
 
 ```json
 {
-  "identity_path":            "/etc/bloxx/identity",
+  "identity_path":            "/etc/rbloxx/identity",
   "announce_interval":        300,
   "time_sync_interval":       43200,
   "server_dest_hashes":       ["<hex>"],
@@ -320,7 +320,7 @@ Reported in the `errors` array of every telemetry payload.
 
 | Field | Default | Description |
 |---|---|---|
-| `identity_path` | `/etc/bloxx/identity` | RNS identity file |
+| `identity_path` | `/etc/rbloxx/identity` | RNS identity file |
 | `announce_interval` | `300` | Seconds between announces and telemetry pushes |
 | `time_sync_interval` | `43200` | Seconds between NTP-style time sync attempts (12 h) |
 | `server_dest_hashes` | `[]` | Hex destination hashes of server(s) to push telemetry to |

@@ -9,6 +9,7 @@ export default function NodesView() {
     const [selected, setSelected] = useState(new Set());
     const [serverDestHash, setServerDestHash] = useState("");
     const [liveTelemetry, setLiveTelemetry] = useState({});
+    const [announceFlash, setAnnounceFlash] = useState({});
     const [showAddModal, setShowAddModal] = useState(false);
     const [addHash, setAddHash] = useState("");
     const [addName, setAddName] = useState("");
@@ -49,23 +50,27 @@ export default function NodesView() {
                     setLiveTelemetry((prev) => ({ ...prev, [hash]: d }));
                     setNodes((prev) => {
                         const idx = prev.findIndex((n) => n.dest_hash === hash);
-                        const patch = {
-                            hostname: d.hostname ?? undefined,
-                            version: d.version ?? undefined,
-                            last_errors: Array.isArray(d.errors) ? d.errors : [],
-                            last_seen: Date.now() / 1000,
-                            online: true,
-                        };
-                        if (idx >= 0) {
-                            const next = [...prev];
-                            next[idx] = { ...next[idx], ...patch };
-                            return next;
-                        }
-                        return prev;
+                        if (idx < 0)
+                            return prev;
+                        // Each telemetry event now carries only the one metric that changed
+                        // (event-driven reporting) -- only patch fields actually present in
+                        // this message, or hostname/version/errors would get wiped back to
+                        // blank on every unrelated metric update.
+                        const patch = { last_seen: Date.now() / 1000, online: true };
+                        if (d.hostname != null)
+                            patch.hostname = d.hostname;
+                        if (d.version != null)
+                            patch.version = d.version;
+                        if (Array.isArray(d.errors))
+                            patch.last_errors = d.errors;
+                        const next = [...prev];
+                        next[idx] = { ...next[idx], ...patch };
+                        return next;
                     });
                 }
                 if (msg.type === "announce" && msg.data) {
                     const d = msg.data;
+                    setAnnounceFlash((prev) => ({ ...prev, [hash]: Date.now() }));
                     setNodes((prev) => {
                         const idx = prev.findIndex((n) => n.dest_hash === hash);
                         const patch = {
@@ -169,7 +174,7 @@ export default function NodesView() {
     const selectedArray = [...selected].filter((h) => nodes.some((n) => n.dest_hash === h));
     const singleSelected = selectedArray.length === 1 ? selectedArray[0] : null;
     const selectedNode = singleSelected ? nodes.find((n) => n.dest_hash === singleSelected) : null;
-    return (_jsxs("div", { className: "flex", style: { height: "calc(100vh - 49px)" }, children: [_jsxs("div", { className: "w-52 flex-shrink-0 flex flex-col border-r border-gray-200 bg-white", children: [_jsxs("div", { className: "flex-1 overflow-y-auto", children: [sortedNodes.length === 0 && (_jsx("p", { className: "px-3 py-4 text-xs text-gray-400", children: "No nodes registered yet." })), sortedNodes.map((node) => (_jsx(NodeSidebarItem, { node: node, isSelected: selected.has(node.dest_hash), isServer: node.dest_hash === serverDestHash, onSelect: () => selectOnly(node.dest_hash), onToggle: () => toggleSelect(node.dest_hash) }, node.dest_hash)))] }), _jsx("div", { className: "p-2 border-t border-gray-100", children: _jsx("button", { onClick: () => { setShowAddModal(true); setAddError(""); }, className: "w-full text-xs text-gray-500 hover:text-gray-900 hover:bg-gray-50 rounded px-2 py-1.5 text-left", children: "+ Add node" }) })] }), showAddModal && (_jsx("div", { className: "fixed inset-0 z-50 flex items-center justify-center bg-black/30", children: _jsxs("div", { className: "bg-white rounded-xl shadow-xl p-5 w-80 space-y-3", children: [_jsx("h3", { className: "text-sm font-semibold text-gray-800", children: "Add node" }), serverDestHash && (_jsxs("div", { className: "rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 space-y-1", children: [_jsxs("p", { className: "text-xs text-gray-500", children: ["Server destination hash \u2014 paste into ", _jsx("span", { className: "font-mono", children: "agent.json" }), " on the node:"] }), _jsxs("div", { className: "flex items-center gap-2", children: [_jsx("span", { className: "flex-1 font-mono text-xs text-gray-800 break-all select-all", children: serverDestHash }), _jsx("button", { type: "button", onClick: () => {
+    return (_jsxs("div", { className: "flex", style: { height: "calc(100vh - 49px)" }, children: [_jsxs("div", { className: "w-52 flex-shrink-0 flex flex-col border-r border-gray-200 bg-white", children: [_jsxs("div", { className: "flex-1 overflow-y-auto", children: [sortedNodes.length === 0 && (_jsx("p", { className: "px-3 py-4 text-xs text-gray-400", children: "No nodes registered yet." })), sortedNodes.map((node) => (_jsx(NodeSidebarItem, { node: node, isSelected: selected.has(node.dest_hash), isServer: node.dest_hash === serverDestHash, onSelect: () => selectOnly(node.dest_hash), onToggle: () => toggleSelect(node.dest_hash), lastAnnounce: announceFlash[node.dest_hash] }, node.dest_hash)))] }), _jsx("div", { className: "p-2 border-t border-gray-100", children: _jsx("button", { onClick: () => { setShowAddModal(true); setAddError(""); }, className: "w-full text-xs text-gray-500 hover:text-gray-900 hover:bg-gray-50 rounded px-2 py-1.5 text-left", children: "+ Add node" }) })] }), showAddModal && (_jsx("div", { className: "fixed inset-0 z-50 flex items-center justify-center bg-black/30", children: _jsxs("div", { className: "bg-white rounded-xl shadow-xl p-5 w-80 space-y-3", children: [_jsx("h3", { className: "text-sm font-semibold text-gray-800", children: "Add node" }), serverDestHash && (_jsxs("div", { className: "rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 space-y-1", children: [_jsxs("p", { className: "text-xs text-gray-500", children: ["Server destination hash \u2014 paste into ", _jsx("span", { className: "font-mono", children: "agent.json" }), " on the node:"] }), _jsxs("div", { className: "flex items-center gap-2", children: [_jsx("span", { className: "flex-1 font-mono text-xs text-gray-800 break-all select-all", children: serverDestHash }), _jsx("button", { type: "button", onClick: () => {
                                                 const write = (text) => {
                                                     if (navigator.clipboard) {
                                                         navigator.clipboard.writeText(text);

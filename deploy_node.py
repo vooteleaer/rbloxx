@@ -4,11 +4,11 @@ from pathlib import Path
 HOST = "192.168.4.1"
 USER = "reticulum"
 PASS = "reticulum"
-REMOTE_DIR = "/home/reticulum/bloxx"
+REMOTE_DIR = "/home/reticulum/rbloxx"
 BASE = Path(__file__).parent
 
 files = [
-    (BASE / "node" / "bloxx_agent.py",     f"{REMOTE_DIR}/bloxx_agent.py"),
+    (BASE / "node" / "rbloxx_agent.py",     f"{REMOTE_DIR}/rbloxx_agent.py"),
     (BASE / "node" / "config_handler.py",  f"{REMOTE_DIR}/config_handler.py"),
     (BASE / "node" / "system_handler.py",  f"{REMOTE_DIR}/system_handler.py"),
     (BASE / "node" / "power_handler.py",   f"{REMOTE_DIR}/power_handler.py"),

@@ -1,19 +1,19 @@
-"""Shared protocol constants for Bloxx node ↔ server communication."""
+"""Shared protocol constants for RBloxx node ↔ server communication.
 
-APP_NAME = "bloxx"
+Transport is LXMF. Message kind is read from the leading verb of
+LXMessage.title (see shared/cli_grammar.py), not a type tag — "tel"/"cfg" are
+report verbs, everything else is a command verb. The only structured field
+carried in LXMessage.fields is FIELD_TXN, used to correlate a command with
+its result (LXMF itself has no request/response correlation).
+"""
+
+APP_NAME = "rbloxx"
 NODE_ASPECT = "node"
 SERVER_ASPECT = "server"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
-# Plain-packet message types (value of the "t" field)
-PKT_TELEMETRY  = "tel"   # node → server: system metrics
-PKT_RTELEMETRY = "rtel"  # node → server: RNode radio metrics
-PKT_CONFIG     = "cfg"   # node → server: config file chunk
-PKT_CMD        = "cmd"   # server → node: command (possibly chunked)
-PKT_RESULT     = "res"   # node → server: command result chunk
-
-# Max content bytes per config/result chunk (leaves room for msgpack envelope in 383-byte MDU)
-CHUNK_SIZE = 300
+# Key used in LXMessage.fields to correlate a command with its result.
+FIELD_TXN = "txn"
 
 # Config types
 CFG_RNS = "rns"

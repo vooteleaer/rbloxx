@@ -62,6 +62,12 @@ function fmt(ts: number) {
   return new Date(ts * 1000).toLocaleString();
 }
 
+function formatWindow(sec: number) {
+  if (sec >= 3600) return `${(sec / 3600).toFixed(1)}h`;
+  if (sec >= 60) return `${Math.round(sec / 60)}m`;
+  return `${Math.round(sec)}s`;
+}
+
 function detectRegion(freq: number) {
   return REGIONS.find((r) => freq >= r.min && freq <= r.max) ?? REGIONS[1];
 }
@@ -81,6 +87,17 @@ function Row({ label, value }: { label: string; value: string | number | null | 
 
 const inputCls = "rounded border border-gray-200 bg-white px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-300 w-full";
 const selectCls = inputCls;
+
+// `online` is undefined when ifstatus hasn't loaded (or the agent's too old
+// to support `get ifstatus`) -- render nothing rather than a misleading dot.
+function IfaceStatusDot({ online }: { online?: boolean }) {
+  if (online == null) return null;
+  return (
+    <span className={`text-xs font-normal ${online ? "text-green-600" : "text-red-500"}`}>
+      ● {online ? "online" : "offline"}
+    </span>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Location map (static OSM tiles)
@@ -128,9 +145,10 @@ function LocationMap({ lat, lon }: { lat: number; lon: number }) {
 // RNode interface card
 // ---------------------------------------------------------------------------
 
-function RNodeCard({ iface, onChange }: {
+function RNodeCard({ iface, onChange, online }: {
   iface: RnsInterface;
   onChange(fields: Record<string, string>): void;
+  online?: boolean;
 }) {
   const f = iface.fields;
   const freq = parseInt(f.frequency ?? "869525000", 10);
@@ -162,7 +180,9 @@ function RNodeCard({ iface, onChange }: {
 
   return (
     <div className="rounded-lg border border-gray-200 p-4 space-y-3">
-      <h4 className="font-medium text-gray-800 text-sm">{iface.name} <span className="text-gray-400 font-normal">RNodeInterface</span></h4>
+      <h4 className="font-medium text-gray-800 text-sm flex items-center gap-2">
+        {iface.name} <span className="text-gray-400 font-normal">RNodeInterface</span> <IfaceStatusDot online={online} />
+      </h4>
 
       <div className="flex items-center gap-2">
         <label className="text-xs text-gray-500 w-24 flex-shrink-0">Enabled</label>
@@ -315,13 +335,15 @@ function RNodeCard({ iface, onChange }: {
 // TCP/UDP interface cards
 // ---------------------------------------------------------------------------
 
-function TcpClientCard({ iface, onChange }: { iface: RnsInterface; onChange(f: Record<string, string>): void }) {
+function TcpClientCard({ iface, onChange, online }: { iface: RnsInterface; onChange(f: Record<string, string>): void; online?: boolean }) {
   const f = iface.fields;
   const set = (k: string, v: string) => onChange({ ...f, [k]: v });
   const [showAdvanced, setShowAdvanced] = useState(false);
   return (
     <div className="rounded-lg border border-gray-200 p-4 space-y-3">
-      <h4 className="font-medium text-gray-800 text-sm">{iface.name} <span className="text-gray-400 font-normal">TCPClientInterface</span></h4>
+      <h4 className="font-medium text-gray-800 text-sm flex items-center gap-2">
+        {iface.name} <span className="text-gray-400 font-normal">TCPClientInterface</span> <IfaceStatusDot online={online} />
+      </h4>
       <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-24">Enabled</label><input type="checkbox" checked={getBool(f.enabled)} onChange={(e) => set("enabled", setBool(e.target.checked))} className="accent-blue-600" /></div>
       <div className="grid grid-cols-2 gap-2">
         <div><label className="text-xs text-gray-500 block mb-1">Host</label><input value={f.target_host ?? ""} onChange={(e) => set("target_host", e.target.value)} className={inputCls} /></div>
@@ -339,13 +361,15 @@ function TcpClientCard({ iface, onChange }: { iface: RnsInterface; onChange(f: R
   );
 }
 
-function UdpCard({ iface, onChange }: { iface: RnsInterface; onChange(f: Record<string, string>): void }) {
+function UdpCard({ iface, onChange, online }: { iface: RnsInterface; onChange(f: Record<string, string>): void; online?: boolean }) {
   const f = iface.fields;
   const set = (k: string, v: string) => onChange({ ...f, [k]: v });
   const [showAdvanced, setShowAdvanced] = useState(false);
   return (
     <div className="rounded-lg border border-gray-200 p-4 space-y-3">
-      <h4 className="font-medium text-gray-800 text-sm">{iface.name} <span className="text-gray-400 font-normal">UDPInterface</span></h4>
+      <h4 className="font-medium text-gray-800 text-sm flex items-center gap-2">
+        {iface.name} <span className="text-gray-400 font-normal">UDPInterface</span> <IfaceStatusDot online={online} />
+      </h4>
       <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-24">Enabled</label><input type="checkbox" checked={getBool(f.enabled)} onChange={(e) => set("enabled", setBool(e.target.checked))} className="accent-blue-600" /></div>
       <div className="grid grid-cols-2 gap-2">
         <div><label className="text-xs text-gray-500 block mb-1">Listen IP</label><input value={f.listen_ip ?? ""} onChange={(e) => set("listen_ip", e.target.value)} className={inputCls} /></div>
@@ -364,10 +388,12 @@ function UdpCard({ iface, onChange }: { iface: RnsInterface; onChange(f: Record<
   );
 }
 
-function UnknownCard({ iface }: { iface: RnsInterface }) {
+function UnknownCard({ iface, online }: { iface: RnsInterface; online?: boolean }) {
   return (
     <div className="rounded-lg border border-gray-200 p-4 space-y-1">
-      <h4 className="font-medium text-gray-800 text-sm">{iface.name} <span className="text-gray-400 font-normal">{iface.fields.type ?? "unknown type"}</span></h4>
+      <h4 className="font-medium text-gray-800 text-sm flex items-center gap-2">
+        {iface.name} <span className="text-gray-400 font-normal">{iface.fields.type ?? "unknown type"}</span> <IfaceStatusDot online={online} />
+      </h4>
       {Object.entries(iface.fields).map(([k, v]) => (
         <div key={k} className="flex justify-between text-xs font-mono text-gray-600 border-b border-gray-100 py-0.5">
           <span className="text-gray-400">{k}</span><span>{v}</span>
@@ -386,15 +412,37 @@ function RnsConfigTab({ destHash, onLatLon }: { destHash: string; onLatLon?: (la
   const [status, setStatus] = useState("");
   const [noPath, setNoPath] = useState(false);
   const [loading, setLoading] = useState(true);
+  // name (matches the [[Section Name]] in rnsConfig.interfaces) -> online.
+  // Undefined entries just mean "not loaded yet / agent doesn't support
+  // get_ifstatus" -- IfaceStatusDot renders nothing in that case.
+  const [ifStatus, setIfStatus] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     setLoading(true);
     loadConfig();
   }, [destHash]);
 
+  async function loadIfStatus() {
+    try {
+      const result = await api.nodes.command(destHash, { cmd: "get_ifstatus" });
+      const output = (result as { output?: string }).output ?? "";
+      const next: Record<string, boolean> = {};
+      for (const line of output.split("\n")) {
+        const idx = line.lastIndexOf("=");
+        if (idx < 0) continue;
+        next[line.slice(0, idx)] = line.slice(idx + 1).trim() === "online";
+      }
+      setIfStatus(next);
+    } catch {
+      // Older agent without get_ifstatus, or node unreachable -- leave
+      // whatever status we last had (or none) rather than erroring the tab.
+    }
+  }
+
   async function loadConfig(forceRefresh = false) {
     setStatus("");
     setNoPath(false);
+    loadIfStatus();
     try {
       let content: string;
       if (!forceRefresh) {
@@ -536,13 +584,14 @@ function RnsConfigTab({ destHash, onLatLon }: { destHash: string; onLatLon?: (la
           {/* Interfaces */}
           {rnsConfig.interfaces.map((iface, idx) => {
             const type = iface.fields.type ?? "";
+            const online = ifStatus[iface.name];
             if (type === "RNodeInterface")
-              return <RNodeCard key={iface.name} iface={iface} onChange={(f) => updateIface(idx, f)} />;
+              return <RNodeCard key={iface.name} iface={iface} onChange={(f) => updateIface(idx, f)} online={online} />;
             if (type === "TCPClientInterface")
-              return <TcpClientCard key={iface.name} iface={iface} onChange={(f) => updateIface(idx, f)} />;
+              return <TcpClientCard key={iface.name} iface={iface} onChange={(f) => updateIface(idx, f)} online={online} />;
             if (type === "UDPInterface")
-              return <UdpCard key={iface.name} iface={iface} onChange={(f) => updateIface(idx, f)} />;
-            return <UnknownCard key={iface.name} iface={iface} />;
+              return <UdpCard key={iface.name} iface={iface} onChange={(f) => updateIface(idx, f)} online={online} />;
+            return <UnknownCard key={iface.name} iface={iface} online={online} />;
           })}
         </>
       )}
@@ -755,7 +804,7 @@ function CommandsSection({ destHash }: { destHash: string }) {
       )}
       {cmd === "log_pull" && (<>
         <P label="Lines"><input type="number" value={params.lines ?? 50} min={1} max={1000} onChange={(e) => setParam("lines", Number(e.target.value))} className={`${inputCls} w-24`} /></P>
-        <P label="Unit (optional)"><input value={params.unit ?? ""} onChange={(e) => setParam("unit", e.target.value || undefined)} className={`${inputCls} w-40`} placeholder="bloxx-agent" /></P>
+        <P label="Unit (optional)"><input value={params.unit ?? ""} onChange={(e) => setParam("unit", e.target.value || undefined)} className={`${inputCls} w-40`} placeholder="rbloxx-agent" /></P>
       </>)}
       {["reboot","shutdown"].includes(cmd) && (
         <P label="Delay (s)"><input type="number" value={params.delay_s ?? 5} min={0} onChange={(e) => setParam("delay_s", Number(e.target.value))} className={`${inputCls} w-24`} /></P>
@@ -792,23 +841,43 @@ interface Props {
 
 type Tab = "rns" | "agent";
 
+const TIME_WINDOWS: { label: string; sec: number }[] = [
+  { label: "15m", sec: 15 * 60 },
+  { label: "30m", sec: 30 * 60 },
+  { label: "1h", sec: 60 * 60 },
+  { label: "4h", sec: 4 * 60 * 60 },
+  { label: "12h", sec: 12 * 60 * 60 },
+];
+
 export default function NodePanel({ destHash, node, onDelete, liveTelemetry }: Props) {
   const [telemetry, setTelemetry] = useState<TelemetryRow[]>([]);
+  const [windowSec, setWindowSec] = useState<number>(TIME_WINDOWS[1].sec); // 30m default
   const [tab, setTab] = useState<Tab>("rns");
   const [labelEdit, setLabelEdit] = useState<string | null>(null);
   const [labelSaving, setLabelSaving] = useState(false);
   const [latLon, setLatLon] = useState<{ lat: number; lon: number } | null>(null);
 
   useEffect(() => {
-    api.nodes.telemetry(destHash, 60).then(setTelemetry).catch(() => {});
-  }, [destHash]);
+    // Fetch every sample within the selected window (not just the last N rows) --
+    // a row-count cap lets fast-changing metrics (cpu_pct, rnode counters) evict
+    // slow ones (RAM, disk, airtime) out of view long before the window does.
+    // 5000 is just a sanity cap against pathological reporting rates.
+    api.nodes.telemetry(destHash, 5000, Date.now() / 1000 - windowSec).then(setTelemetry).catch(() => {});
+  }, [destHash, windowSec]);
 
-  // Prepend live WS telemetry to sparkline data
+  // Prepend live WS telemetry to sparkline data, then drop anything that's
+  // aged out of the selected window (time-based eviction, not a row count --
+  // see fetch effect above for why a row count caused metrics to vanish).
   useEffect(() => {
     if (!liveTelemetry) return;
-    const row = liveTelemetry as unknown as TelemetryRow;
-    setTelemetry((prev) => [row, ...prev].slice(0, 60));
-  }, [liveTelemetry]);
+    // WS telemetry events key the timestamp as "timestamp" (matches the wire
+    // payload built server-side); the REST/DB rows use "ts" -- normalize here
+    // so span math never mixes the two up into NaN.
+    const ts = (liveTelemetry.timestamp as number | undefined) ?? (liveTelemetry.ts as number | undefined) ?? Date.now() / 1000;
+    const row = { ...liveTelemetry, ts } as unknown as TelemetryRow;
+    const cutoff = Date.now() / 1000 - windowSec;
+    setTelemetry((prev) => [row, ...prev].filter((r) => r.ts >= cutoff));
+  }, [liveTelemetry, windowSec]);
 
   async function handleDelete() {
     if (!window.confirm("Delete this node and all its telemetry? This cannot be undone.")) return;
@@ -827,11 +896,39 @@ export default function NodePanel({ destHash, node, onDelete, liveTelemetry }: P
     }
   }
 
+  // Shared time window for every graph -- all cards plot against the exact
+  // same domainStart..domainEnd (the selected preset, ending "now"), so x
+  // position means the same thing on every graph and matches the button the
+  // user picked exactly, regardless of how sparse any one metric's data is.
+  const domainEnd = Date.now() / 1000;
+  const domainStart = domainEnd - windowSec;
+  const windowLabel = TIME_WINDOWS.find((w) => w.sec === windowSec)?.label ?? formatWindow(windowSec);
+
+  // Hardcoded list of metric cards -- always rendered in this fixed order,
+  // even when a field has no data yet, so the grid doesn't reshuffle/disappear
+  // as different metrics happen to report at different rates.
   const spark = (field: keyof TelemetryRow, label: string, unit: string, color?: string, min?: number, max?: number) => {
-    const data = [...telemetry].reverse().map((r) => r[field] as number | null);
-    const latest = telemetry[0]?.[field] as number | null ?? null;
-    if (data.every((v) => v == null)) return null;
-    return <SparkLine key={field as string} data={data} label={label} unit={unit} latest={latest} color={color} min={min} max={max} />;
+    // telemetry rows are sparse (one changed metric per row) -- the newest
+    // row rarely has *this* field, so scan forward for the most recent one
+    // that does, instead of reading index 0 and showing "—" most of the time.
+    const latest = telemetry.find((r) => r[field] != null)?.[field] as number | null ?? null;
+    const points = telemetry
+      .filter((r) => r[field] != null)
+      .map((r) => ({ ts: r.ts, value: r[field] as number }));
+    return (
+      <SparkLine
+        key={field as string}
+        points={points}
+        domainStart={domainStart}
+        domainEnd={domainEnd}
+        label={label}
+        unit={unit}
+        latest={latest}
+        color={color}
+        min={min}
+        max={max}
+      />
+    );
   };
 
   const dotColor = !node.online ? "text-red-500" : node.last_errors.length ? "text-amber-400" : "text-green-500";
@@ -887,60 +984,52 @@ export default function NodePanel({ destHash, node, onDelete, liveTelemetry }: P
       </div>
 
       {/* Telemetry sparklines */}
-      {telemetry.length > 0 && (() => {
-        const newestTs = telemetry[0]?.ts;
-        const oldestTs = telemetry[telemetry.length - 1]?.ts;
-        const windowSec = newestTs && oldestTs ? newestTs - oldestTs : null;
-        const windowLabel = windowSec
-          ? windowSec >= 3600
-            ? `${(windowSec / 3600).toFixed(1)}h window`
-            : `${Math.round(windowSec / 60)}m window`
-          : null;
-        return (
-        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-4">
-          {windowLabel && (
-            <p className="text-xs text-gray-400 -mb-2">{windowLabel} · {telemetry.length} samples</p>
-          )}
-          <div className="flex gap-4 items-start">
-            <div className="flex-1 space-y-4">
-              <div className="flex flex-wrap gap-6">
-                {spark("cpu_pct",     "CPU",     "%",  "#3b82f6", 0, 100)}
-                {spark("ram_pct",     "RAM",     "%",  "#8b5cf6", 0, 100)}
-                {spark("disk_pct",   "Disk",    "%",  "#f59e0b", 0, 100)}
-                {spark("temp_c",     "Temp",    "°C", "#ef4444")}
-                {spark("rns_rtt_ms", "RTT",     "ms", "#64748b")}
-                {spark("batt_soc_pct",   "Battery",  "%", "#22c55e", 0, 100)}
-                {spark("batt_power_w",   "Bat power", "W", "#16a34a")}
-                {spark("solar_power_w",  "Solar",    "W", "#eab308")}
-              </div>
-
-              {/* RNode section — only rendered when the node has RNode data */}
-              {(() => {
-                const rnodeSparks = [
-                  spark("rnode_airtime_short",      "Airtime (short)", "%",   "#06b6d4", 0, 100),
-                  spark("rnode_airtime_long",       "Airtime (long)",  "%",   "#0891b2", 0, 100),
-                  spark("rnode_channel_load_short", "Ch load",         "%",   "#7c3aed", 0, 100),
-                  spark("rnode_noise_floor",        "Noise floor",     "dBm", "#94a3b8"),
-                  spark("rnode_interference_dbm",   "Interference",    "dBm", "#f43f5e"),
-                  spark("rnode_bitrate",            "Bitrate",         "bps", "#10b981"),
-                ].filter(Boolean);
-                if (!rnodeSparks.length) return null;
-                return (
-                  <div>
-                    <p className="text-xs text-gray-400 mb-3">RNode</p>
-                    <div className="flex flex-wrap gap-6">{rnodeSparks}</div>
-                  </div>
-                );
-              })()}
+      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-4">
+          <div className="flex items-center justify-between -mb-2">
+            <p className="text-xs text-gray-400">
+              Showing last {windowLabel} ({telemetry.length} samples — every graph below shares this same time window)
+            </p>
+            <div className="flex gap-1">
+              {TIME_WINDOWS.map((w) => (
+                <button
+                  key={w.label}
+                  onClick={() => setWindowSec(w.sec)}
+                  className={`text-xs px-2 py-0.5 rounded ${
+                    windowSec === w.sec
+                      ? "bg-gray-800 text-white"
+                      : "text-gray-500 hover:bg-gray-100"
+                  }`}
+                >
+                  {w.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-4 items-stretch">
+            <div className="flex-1 grid grid-cols-7 grid-rows-2 gap-3 min-w-0 min-h-[320px]">
+              {[
+                spark("cpu_pct",     "CPU",     "%",  "#3b82f6", 0, 100),
+                spark("ram_pct",     "RAM",     "%",  "#8b5cf6", 0, 100),
+                spark("disk_pct",   "Disk",    "%",  "#f59e0b", 0, 100),
+                spark("temp_c",     "Temp",    "°C", "#ef4444"),
+                spark("rns_rtt_ms", "RTT",     "ms", "#64748b"),
+                spark("batt_soc_pct",   "Battery",  "%", "#22c55e", 0, 100),
+                spark("batt_power_w",   "Bat power", "W", "#16a34a"),
+                spark("solar_power_w",  "Solar",    "W", "#eab308"),
+                spark("rnode_airtime_short",      "Airtime (short)", "%",   "#06b6d4", 0, 100),
+                spark("rnode_airtime_long",       "Airtime (long)",  "%",   "#0891b2", 0, 100),
+                spark("rnode_channel_load_short", "Ch load",         "%",   "#7c3aed", 0, 100),
+                spark("rnode_noise_floor",        "Noise floor",     "dBm", "#94a3b8"),
+                spark("rnode_interference_dbm",   "Interference",    "dBm", "#f43f5e"),
+                spark("rnode_bitrate",            "Bitrate",         "bps", "#10b981"),
+              ].filter(Boolean)}
             </div>
 
             {latLon && !isNaN(latLon.lat) && !isNaN(latLon.lon) && (
               <LocationMap lat={latLon.lat} lon={latLon.lon} />
             )}
           </div>
-        </div>
-        );
-      })()}
+      </div>
 
       {/* Settings tabs */}
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm">

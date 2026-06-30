@@ -65,8 +65,8 @@ async def get_node(dest_hash: str):
 
 
 @router.get("/{dest_hash}/telemetry")
-async def get_telemetry(dest_hash: str, limit: int = 100):
-    return await node_registry.get_telemetry(dest_hash, limit=limit)
+async def get_telemetry(dest_hash: str, limit: int = 100, since: float | None = None):
+    return await node_registry.get_telemetry(dest_hash, limit=limit, since=since)
 
 
 @router.delete("/{dest_hash}")

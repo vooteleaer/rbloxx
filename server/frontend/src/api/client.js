@@ -18,7 +18,7 @@ export const api = {
     nodes: {
         list: () => req("/nodes"),
         get: (hash) => req(`/nodes/${hash}`),
-        telemetry: (hash, limit = 100) => req(`/nodes/${hash}/telemetry?limit=${limit}`),
+        telemetry: (hash, limit = 100, since) => req(`/nodes/${hash}/telemetry?limit=${limit}${since != null ? `&since=${since}` : ""}`),
         add: (destHash, label) => req("/nodes", {
             method: "POST",
             headers: { "Content-Type": "application/json" },

@@ -40,13 +40,13 @@ COPY --from=frontend-builder /build/dist/ ./dist/
 COPY server/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# /etc/bloxx   — server RNS identity (must survive restarts)
-# /var/lib/bloxx — SQLite database
+# /etc/rbloxx   — server RNS identity (must survive restarts)
+# /var/lib/rbloxx — SQLite database
 # /root/.reticulum — RNS config and transport data
-VOLUME ["/etc/bloxx", "/var/lib/bloxx", "/root/.reticulum"]
+VOLUME ["/etc/rbloxx", "/var/lib/rbloxx", "/root/.reticulum"]
 
-EXPOSE 8200
+EXPOSE 80
 
-ENV BLOXX_DB=/var/lib/bloxx/bloxx.db
+ENV RBLOXX_DB=/var/lib/rbloxx/rbloxx.db
 
 ENTRYPOINT ["/entrypoint.sh"]

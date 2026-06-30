@@ -1,5 +1,6 @@
-# rns and msgpack are already installed by rnsd — no pip needed on RNode-only nodes
+# rns is already installed by rnsd — no pip needed on RNode-only nodes
+# lxmf is NOT bundled with rnsd — always pip-install it, it's the agent's transport
 # smbus2 is optional: only needed for INA226/INA219 battery monitoring hardware
 rns
-msgpack
+lxmf
 smbus2

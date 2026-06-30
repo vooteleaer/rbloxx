@@ -12,17 +12,18 @@ import RNS
 
 CONFIG_PATHS = {
     "rns": Path.home() / ".reticulum" / "config",
-    "agent": Path("/etc/bloxx/agent.json"),
+    "agent": Path("/etc/rbloxx/agent.json"),
 }
 
-BACKUP_SUFFIX = ".bloxx_backup"
+BACKUP_SUFFIX = ".rbloxx_backup"
 
 
 class ConfigHandler:
-    def __init__(self, cfg: dict, config_path: str = "/etc/bloxx/agent.json"):
+    def __init__(self, cfg: dict, config_path: str = "/etc/rbloxx/agent.json"):
         self._cfg = cfg
         self._agent_config_path = Path(config_path)
         self._rollback_timer: threading.Thread | None = None
+        self._rollback_event: threading.Event | None = None
         self._watchdog_dest_hashes: list[str] = cfg.get("server_dest_hashes", [])
         self._watchdog_timeout: int = cfg.get("watchdog_timeout_s", 300)
 
@@ -103,6 +104,35 @@ class ConfigHandler:
             self._restore_backup(path, backup)
             return {"ok": False, "error": str(e)}
 
+    def find_section_by_type(self, cfg_type: str, type_substring: str) -> str | None:
+        """Return the first section name whose `type` key contains `type_substring`.
+
+        Used to resolve e.g. the RNodeInterface section name automatically, so
+        commands like `set CR=7 SF=5` don't need the caller to know the
+        section name (mirrors the same "type" sniffing already used for live
+        interface stats in rbloxx_agent.py::_get_rns_stats).
+        """
+        path = self._resolve_path(cfg_type)
+        if not path.exists():
+            return None
+        parser = configparser.RawConfigParser()
+        parser.optionxform = str
+        parser.read_string(path.read_text(encoding="utf-8"))
+        for section in parser.sections():
+            if type_substring in parser.get(section, "type", fallback=""):
+                return section
+        return None
+
+    def get_ini_value(self, cfg_type: str, section: str, key: str) -> str | None:
+        """Read one key from one section of an INI-style config, or None if absent."""
+        path = self._resolve_path(cfg_type)
+        if not path.exists():
+            return None
+        parser = configparser.RawConfigParser()
+        parser.optionxform = str
+        parser.read_string(path.read_text(encoding="utf-8"))
+        return parser.get(section, key, fallback=None)
+
     def _apply_ini_patches(self, content: str, patches: list[dict]) -> str:
         """Apply [{section, key, value}] patches to an INI-style config, preserving comments."""
         parser = configparser.RawConfigParser()
@@ -124,30 +154,34 @@ class ConfigHandler:
     # ------------------------------------------------------------------
 
     def _start_commit_watchdog(self, path: Path, backup: Path) -> None:
-        if self._rollback_timer:
-            self._rollback_timer.cancel()
+        if self._rollback_event:
+            self._rollback_event.set()  # signal any previous watchdog thread to stop
 
         # Poll the server every 30s; commit on first success, rollback on timeout.
         # A brief server restart (e.g. maintenance) won't trigger a rollback as long
         # as connectivity is restored before the deadline.
+        event = threading.Event()
+        self._rollback_event = event
         self._rollback_timer = threading.Thread(
             target=self._commit_or_rollback_loop,
-            args=(path, backup),
+            args=(path, backup, event),
             daemon=True,
             name=f"commit-watchdog-{path.name}",
         )
         self._rollback_timer.start()
 
-    def _commit_or_rollback_loop(self, path: Path, backup: Path) -> None:
+    def _commit_or_rollback_loop(self, path: Path, backup: Path, event: threading.Event) -> None:
         probe_interval = 30
         deadline = time.time() + self._watchdog_timeout
         while time.time() < deadline:
-            time.sleep(probe_interval)
+            if event.wait(probe_interval):
+                return  # superseded by a newer watchdog for this path
             if self._can_reach_server():
                 self._commit_config(path, backup)
                 return
-        # Timeout expired — roll back
-        self._rollback_config(path, backup)
+        # Timeout expired — roll back, unless superseded in the meantime
+        if not event.is_set():
+            self._rollback_config(path, backup)
 
     def _can_reach_server(self) -> bool:
         """Return True if any server is reachable (identity known + path exists).
@@ -203,7 +237,7 @@ class ConfigHandler:
         raise ValueError(f"Cannot write config type: {cfg_type}")
 
     def _restart_service(self, cfg_type: str) -> None:
-        service = "rnsd" if cfg_type == "rns" else "bloxx-agent"
+        service = "rnsd" if cfg_type == "rns" else "rbloxx-agent"
         try:
             subprocess.run(["sudo", "systemctl", "restart", service], timeout=15)
         except Exception as e:

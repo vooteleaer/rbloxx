@@ -1,6 +1,13 @@
-"""RNS service layer for the Bloxx server."""
+"""RNS service layer for the RBloxx server.
+
+Transport is LXMF, same as node/rbloxx_agent.py: the message kind is read
+from the leading verb of LXMessage.content (see shared/cli_grammar.py), not
+a type tag. Nodes announce/deliver on LXMF's own hardcoded ("lxmf","delivery")
+destination -- there is no custom app/aspect anymore.
+"""
 
 import asyncio
+import socket
 import sys
 import threading
 import time
@@ -8,8 +15,8 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-import msgpack
 import RNS
+import LXMF
 
 # RNS 1.2.5 + Python 3.13 bug: _used_destination_data incorrectly calls
 # rpc_connection.recv() in shared-instance client mode, where rnsd never
@@ -25,32 +32,23 @@ if hasattr(RNS.Reticulum, "_used_destination_data"):
     RNS.Reticulum._used_destination_data = _rns_safe_udd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "shared"))
-from protocol import (
-    APP_NAME, SERVER_ASPECT, NODE_ASPECT, VERSION,
-    PKT_TELEMETRY, PKT_RTELEMETRY, PKT_CONFIG, PKT_CMD, PKT_RESULT,
-    CHUNK_SIZE,
-)
+from protocol import VERSION, FIELD_TXN
+from cli_grammar import cmd_dict_to_cli
 
 import node_registry
 
 _reticulum: RNS.Reticulum | None = None
-_destination: RNS.Destination | None = None
+_router: LXMF.LXMRouter | None = None
+_dest: RNS.Destination | None = None
 _loop: asyncio.AbstractEventLoop | None = None
-_identity_path = Path("/etc/bloxx/server_identity")
+_identity_path = Path("/etc/rbloxx/server_identity")
 _announce_interval = 300
 _ws_broadcast: Callable | None = None
+_db_path = node_registry.DB_PATH
 
-# Pending command futures: cmd_id → asyncio.Future
+# Pending command futures: txn → asyncio.Future
 _pending_commands: dict[str, asyncio.Future] = {}
 _pending_lock = threading.Lock()
-
-# Result chunk reassembly buffers: cmd_id → {"chunks": {}, "total": n, "ok": bool}
-_result_chunks: dict[str, dict] = {}
-_result_chunks_lock = threading.Lock()
-
-# Config chunk reassembly buffers: (dest_hash, cfg_type) → {"chunks": {}, "total": n}
-_config_chunks: dict[tuple, dict] = {}
-_config_chunks_lock = threading.Lock()
 
 
 def init(
@@ -58,47 +56,46 @@ def init(
     announce_interval: int = 300,
     db_path: str = node_registry.DB_PATH,
 ) -> None:
-    global _reticulum, _destination, _loop, _identity_path, _announce_interval
+    global _reticulum, _router, _dest, _loop, _identity_path, _announce_interval, _db_path
 
     if identity_path:
         _identity_path = identity_path
     _announce_interval = announce_interval
+    _db_path = db_path
 
     _loop = asyncio.get_event_loop()
     _reticulum = RNS.Reticulum(require_shared_instance=True)
 
     identity = _load_or_create_identity()
 
-    _destination = RNS.Destination(
-        identity,
-        RNS.Destination.IN,
-        RNS.Destination.SINGLE,
-        APP_NAME,
-        SERVER_ASPECT,
-    )
+    # Dedicated subdirectory, distinct from a co-located node agent's own
+    # LXMF storage (which lives directly in *its* identity's parent dir) --
+    # lets server and agent run on the same box without colliding.
+    storagepath = _identity_path.parent / "server_lxmf"
+    _router = LXMF.LXMRouter(identity=identity, storagepath=str(storagepath))
+    _dest = _router.register_delivery_identity(identity, display_name=socket.gethostname())
+    _router.register_delivery_callback(_handle_lxm)
 
-    # Receive plain packets from nodes (telemetry, configs, command results)
-    _destination.set_packet_callback(_handle_packet)
-
-    # Listen for node announces
+    # Listen for node announces -- nodes announce on LXMF's own hardcoded
+    # ("lxmf", "delivery") destination, not a custom app/aspect.
     RNS.Transport.register_announce_handler(_NodeAnnounceHandler(db_path))
 
-    # Announce server presence periodically
+    # Announce server presence periodically, so nodes can recall its identity.
     threading.Thread(target=_announce_loop, daemon=True, name="srv-announce").start()
 
     RNS.log(
-        f"Bloxx server started — dest {RNS.prettyhexrep(_destination.hash)}  "
-        f"identity {_destination.identity.hash.hex()}",
+        f"RBloxx server started — dest {RNS.prettyhexrep(_dest.hash)}  "
+        f"identity {identity.hash.hex()}",
         RNS.LOG_NOTICE,
     )
 
 
 def get_server_info() -> dict:
-    if _destination is None:
+    if _dest is None:
         return {}
     return {
-        "dest_hash": _destination.hash.hex(),
-        "identity_hash": _destination.identity.hash.hex(),
+        "dest_hash": _dest.hash.hex(),
+        "identity_hash": _dest.identity.hash.hex(),
         "version": VERSION,
     }
 
@@ -128,110 +125,93 @@ def _load_or_create_identity() -> RNS.Identity:
 
 def _announce_loop() -> None:
     while True:
-        if _destination:
-            app_data = msgpack.packb({"version": VERSION}, use_bin_type=True)
-            _destination.announce(app_data=app_data)
+        if _dest:
+            _dest.announce()
         time.sleep(_announce_interval)
 
 
 # ------------------------------------------------------------------
-# Inbound packet dispatcher (called from RNS thread)
+# Inbound LXMF dispatcher (called from RNS thread)
 # ------------------------------------------------------------------
 
-def _handle_packet(data: bytes, packet) -> None:
-    try:
-        msg = msgpack.unpackb(data, raw=False)
-    except Exception:
+def _handle_lxm(message: "LXMF.LXMessage") -> None:
+    if not message.signature_validated:
+        RNS.log("Rejected unsigned/invalid LXM from node", RNS.LOG_WARNING)
         return
 
-    pkt_type = msg.get("t")
-    node_hash = msg.get("h", "")  # node's own dest hash (self-reported in packet)
+    node_hash = message.source_hash.hex()
+    raw = message.content_as_string() or ""
+    txn = (message.fields or {}).get(FIELD_TXN, "")
 
-    if pkt_type == PKT_TELEMETRY:
+    # Command results are unambiguous by their literal "OK"/"ERR" prefix --
+    # checked first and sliced precisely (not partitioned on "\n"), since
+    # the output body (e.g. a get_config file dump) may itself be multi-line.
+    if raw == "OK":
+        _handle_result(True, "", txn)
+        return
+    if raw.startswith("OK: "):
+        _handle_result(True, raw[4:], txn)
+        return
+    if raw == "ERR":
+        _handle_result(False, "", txn)
+        return
+    if raw.startswith("ERR: "):
+        _handle_result(False, raw[5:], txn)
+        return
+
+    # Reports (node → server, one-way): first line is the verb, an optional
+    # bulk payload follows after the first newline.
+    line, _, rest = raw.partition("\n")
+    line = line.strip()
+
+    if line.startswith("tel "):
+        key, _, value = line[4:].partition("=")
         if _loop:
-            asyncio.run_coroutine_threadsafe(_store_telemetry(node_hash, msg.get("d", {})), _loop)
-
-    elif pkt_type == PKT_RTELEMETRY:
+            asyncio.run_coroutine_threadsafe(_store_telemetry(node_hash, key, value), _loop)
+    elif line.startswith("cfg "):
+        cfg_type = line[4:].strip()
         if _loop:
-            asyncio.run_coroutine_threadsafe(_store_rtelemetry(node_hash, msg.get("d", {})), _loop)
-
-    elif pkt_type == PKT_CONFIG:
-        _handle_config_chunk(node_hash, msg)
-
-    elif pkt_type == PKT_RESULT:
-        _handle_result_chunk(msg)
+            asyncio.run_coroutine_threadsafe(_store_config_snapshot(node_hash, cfg_type, rest), _loop)
+    else:
+        RNS.log(f"Unrecognized message from {node_hash[:12]}: {line!r}", RNS.LOG_WARNING)
 
 
 # ------------------------------------------------------------------
 # Telemetry storage
 # ------------------------------------------------------------------
 
-async def _store_telemetry(dest_hash: str, payload: dict) -> None:
-    await node_registry.upsert_node(dest_hash, payload)
-    await node_registry.record_telemetry(dest_hash, payload)
-    topo = payload.get("topology", {})
-    if topo and topo.get("paths"):
-        await node_registry.upsert_topology(dest_hash, topo["paths"])
+async def _store_telemetry(dest_hash: str, key: str, value: str) -> None:
+    # Only track telemetry for admin-registered nodes (added via POST /api/v1/nodes
+    # or a prior accepted announce) -- otherwise every LXMF-speaking device on the
+    # mesh that happens to send a "tel ..." line would get silently auto-registered.
+    if not await node_registry.node_exists(dest_hash, _db_path):
+        return
+    try:
+        parsed_value: object = float(value)
+    except ValueError:
+        parsed_value = value
+    payload = {"timestamp": time.time(), key: parsed_value}
+    await node_registry.upsert_node(dest_hash, {}, _db_path)
+    await node_registry.record_telemetry(dest_hash, payload, _db_path)
     if _ws_broadcast:
         await _ws_broadcast({"type": "telemetry", "dest_hash": dest_hash, "data": payload})
 
 
-async def _store_rtelemetry(dest_hash: str, payload: dict) -> None:
-    # rtelemetry has no hostname/errors — only record the radio stats time-series row
-    await node_registry.record_telemetry(dest_hash, payload)
-    if _ws_broadcast:
-        await _ws_broadcast({"type": "rtelemetry", "dest_hash": dest_hash, "data": payload})
+async def _store_config_snapshot(dest_hash: str, cfg_type: str, content: str) -> None:
+    if not await node_registry.node_exists(dest_hash, _db_path):
+        return
+    await node_registry.save_config_snapshot(dest_hash, cfg_type, content, _db_path)
 
 
 # ------------------------------------------------------------------
-# Config chunk reassembly
+# Command result correlation
 # ------------------------------------------------------------------
 
-def _handle_config_chunk(dest_hash: str, msg: dict) -> None:
-    cfg_type = msg.get("ct", "")
-    total = msg.get("n", 1)
-    idx = msg.get("i", 0)
-    chunk = msg.get("c", "")
-    key = (dest_hash, cfg_type)
-
-    with _config_chunks_lock:
-        buf = _config_chunks.setdefault(key, {"chunks": {}, "total": total})
-        buf["chunks"][idx] = chunk
-        if len(buf["chunks"]) < buf["total"]:
-            return
-        content = "".join(buf["chunks"][i] for i in range(buf["total"]))
-        del _config_chunks[key]
-
-    if _loop:
-        asyncio.run_coroutine_threadsafe(
-            node_registry.save_config_snapshot(dest_hash, cfg_type, content), _loop
-        )
-
-
-# ------------------------------------------------------------------
-# Command result chunk reassembly
-# ------------------------------------------------------------------
-
-def _handle_result_chunk(msg: dict) -> None:
-    cmd_id = msg.get("id", "")
-    total = msg.get("n", 1)
-    idx = msg.get("i", 0)
-    chunk = msg.get("c", "")
-    ok = msg.get("ok", False)
-
-    with _result_chunks_lock:
-        buf = _result_chunks.setdefault(cmd_id, {"chunks": {}, "total": total, "ok": ok})
-        buf["chunks"][idx] = chunk
-        if len(buf["chunks"]) < buf["total"]:
-            return
-        output = "".join(buf["chunks"][i] for i in range(buf["total"]))
-        result_ok = buf["ok"]
-        del _result_chunks[cmd_id]
-
-    result = {"ok": result_ok, "output": output} if result_ok else {"ok": False, "error": output}
+def _handle_result(ok: bool, output: str, txn: str) -> None:
+    result = {"ok": ok, "output": output} if ok else {"ok": False, "error": output}
 
     with _pending_lock:
-        fut = _pending_commands.get(cmd_id)
+        fut = _pending_commands.get(txn)
 
     if fut and _loop:
         _loop.call_soon_threadsafe(_resolve_future, fut, result)
@@ -247,7 +227,11 @@ def _resolve_future(fut: asyncio.Future, result: dict) -> None:
 # ------------------------------------------------------------------
 
 class _NodeAnnounceHandler:
-    aspect_filter = f"{APP_NAME}.{NODE_ASPECT}"
+    # "lxmf.delivery" is the generic destination every LXMF client (not just
+    # RBloxx nodes) announces on -- so this handler sees all LXMF traffic on
+    # the mesh, not just our fleet. _handle_announce filters to admin-registered
+    # nodes only, so random mesh/chat peers never get auto-added to the registry.
+    aspect_filter = "lxmf.delivery"
 
     def __init__(self, db_path: str):
         self._db_path = db_path
@@ -259,33 +243,29 @@ class _NodeAnnounceHandler:
         app_data: bytes | None,
     ) -> None:
         dest_hash_hex = destination_hash.hex()
-        data: dict = {"hostname": None, "version": None}
-        if app_data:
-            try:
-                data = msgpack.unpackb(app_data, raw=False)
-            except Exception:
-                pass
-
-        data["identity_hash"] = announced_identity.hash.hex() if announced_identity else None
-
+        data: dict = {
+            "hostname": LXMF.display_name_from_app_data(app_data),
+            "identity_hash": announced_identity.hash.hex() if announced_identity else None,
+        }
         if _loop:
-            asyncio.run_coroutine_threadsafe(
-                node_registry.upsert_node(dest_hash_hex, data, self._db_path), _loop
-            )
-            if _ws_broadcast:
-                asyncio.run_coroutine_threadsafe(
-                    _ws_broadcast({"type": "announce", "dest_hash": dest_hash_hex, "data": data}),
-                    _loop,
-                )
+            asyncio.run_coroutine_threadsafe(_handle_announce(dest_hash_hex, data, self._db_path), _loop)
+
+
+async def _handle_announce(dest_hash_hex: str, data: dict, db_path: str) -> None:
+    if not await node_registry.node_exists(dest_hash_hex, db_path):
+        return
+    await node_registry.upsert_node(dest_hash_hex, data, db_path)
+    if _ws_broadcast:
+        await _ws_broadcast({"type": "announce", "dest_hash": dest_hash_hex, "data": data})
 
 
 # ------------------------------------------------------------------
-# Send command to a node (async — fire plain packet, await result)
+# Send command to a node (async — fire LXMF message, await result)
 # ------------------------------------------------------------------
 
 async def send_command(node_dest_hash: str, cmd: dict, timeout: float = 60.0) -> dict:
-    """Send a command packet to a node and await the result."""
-    if _destination is None:
+    """Send a command to a node and await the result."""
+    if _dest is None:
         return {"ok": False, "error": "server not initialised"}
 
     dest_hash_bytes = bytes.fromhex(node_dest_hash)
@@ -295,22 +275,33 @@ async def send_command(node_dest_hash: str, cmd: dict, timeout: float = 60.0) ->
     if identity is None:
         return {"ok": False, "error": "no_path: node identity unknown — node has not announced yet"}
 
+    try:
+        cli_line, content_bytes = cmd_dict_to_cli(cmd)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
     node_dest = RNS.Destination(
-        identity, RNS.Destination.OUT, RNS.Destination.SINGLE, APP_NAME, NODE_ASPECT,
+        identity, RNS.Destination.OUT, RNS.Destination.SINGLE, "lxmf", "delivery",
     )
 
-    cmd_id = uuid.uuid4().hex
+    txn = uuid.uuid4().hex
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
 
     with _pending_lock:
-        _pending_commands[cmd_id] = fut
+        _pending_commands[txn] = fut
+
+    body = cli_line if content_bytes is None else f"{cli_line}\n{content_bytes.decode('utf-8')}"
+    lxm = LXMF.LXMessage(
+        node_dest, _dest, body.encode("utf-8"),
+        fields={FIELD_TXN: txn}, desired_method=LXMF.LXMessage.OPPORTUNISTIC,
+    )
 
     try:
-        _send_cmd_packets(node_dest, cmd_id, cmd)
+        _router.handle_outbound(lxm)
     except Exception as e:
         with _pending_lock:
-            _pending_commands.pop(cmd_id, None)
+            _pending_commands.pop(txn, None)
         return {"ok": False, "error": f"send error: {e}"}
 
     try:
@@ -319,32 +310,4 @@ async def send_command(node_dest_hash: str, cmd: dict, timeout: float = 60.0) ->
         return {"ok": False, "error": "timeout: no response from node"}
     finally:
         with _pending_lock:
-            _pending_commands.pop(cmd_id, None)
-        with _result_chunks_lock:
-            _result_chunks.pop(cmd_id, None)
-
-
-def _send_cmd_packets(node_dest: RNS.Destination, cmd_id: str, cmd: dict) -> None:
-    """Serialise and send one or more PKT_CMD packets to the node destination."""
-    content = cmd.get("content")
-    base = {
-        "t": PKT_CMD,
-        "sh": _destination.hash.hex(),
-        "id": cmd_id,
-        **{k: v for k, v in cmd.items() if k != "content"},
-    }
-
-    if content is not None:
-        encoded = content.encode("utf-8")
-        chunks = [encoded[i:i + CHUNK_SIZE] for i in range(0, len(encoded), CHUNK_SIZE)] or [b""]
-        for i, chunk in enumerate(chunks):
-            payload = msgpack.packb(
-                {**base, "i": i, "n": len(chunks), "c": chunk.decode("utf-8")},
-                use_bin_type=True,
-            )
-            RNS.Packet(node_dest, payload, create_receipt=False).send()
-    else:
-        payload = msgpack.packb(base, use_bin_type=True)
-        sent = RNS.Packet(node_dest, payload, create_receipt=False).send()
-        if sent is False:
-            raise RuntimeError("packet rejected — no path to node")
+            _pending_commands.pop(txn, None)

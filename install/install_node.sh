@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-BLOXX_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-NODE_DIR="$BLOXX_DIR/node"
+RBLOXX_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+NODE_DIR="$RBLOXX_DIR/node"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -23,7 +23,7 @@ fi
 
 # --show-hash mode: just print the hash of the existing identity and exit
 if [ "${1}" = "--show-hash" ]; then
-    IDENTITY_PATH=/etc/bloxx/identity
+    IDENTITY_PATH=/etc/rbloxx/identity
     if [ ! -f "$IDENTITY_PATH" ]; then
         echo "Identity not found at $IDENTITY_PATH — run the installer first."
         exit 1
@@ -47,13 +47,16 @@ if [ "${1}" = "--show-hash" ]; then
 import RNS
 RNS.Reticulum(loglevel=0)
 identity = RNS.Identity.from_file('$IDENTITY_PATH')
-dest = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, 'bloxx', 'node')
+# The agent listens on LXMF's own hardcoded ("lxmf","delivery") destination
+# (register_delivery_identity), not a custom app/aspect -- the hash must be
+# computed the same way or it won't match what the agent actually announces.
+dest = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, 'lxmf', 'delivery')
 print(dest.hash.hex())
 PYEOF
     exit 0
 fi
 
-echo "=== Bloxx node agent installer ==="
+echo "=== RBloxx node agent installer ==="
 
 # ---------------------------------------------------------------------------
 # [1/7] Python
@@ -121,16 +124,17 @@ _find_rns_python() {
 
 _RNS_PYTHON=$(_find_rns_python)
 
+# Try to install — handle externally-managed-environment (PEP 668)
+_pip_install() {
+    "$PYTHON" -m pip install --quiet "$@" 2>/dev/null && return 0
+    "$PYTHON" -m pip install --quiet --break-system-packages "$@" 2>/dev/null && return 0
+    return 1
+}
+
 if [ -n "$_RNS_PYTHON" ]; then
     PYTHON="$_RNS_PYTHON"
     _ok "RNS already installed  ($("$PYTHON" -c "import RNS; print(RNS.__version__)" 2>/dev/null))  [$PYTHON]"
 else
-    # Try to install — handle externally-managed-environment (PEP 668)
-    _pip_install() {
-        "$PYTHON" -m pip install --quiet "$@" 2>/dev/null && return 0
-        "$PYTHON" -m pip install --quiet --break-system-packages "$@" 2>/dev/null && return 0
-        return 1
-    }
     if _pip_install rns; then
         _ok "RNS installed"
     else
@@ -142,6 +146,23 @@ else
         "$PYTHON" -m pip install --quiet rns
         _ok "RNS installed in /opt/rns-venv"
     fi
+fi
+
+# LXMF — hard requirement (the agent's whole transport runs on LXMRouter/LXMessage,
+# not raw RNS.Packet), so this must succeed, not just be best-effort like smbus2 below.
+if ! "$PYTHON" -c "import LXMF" 2>/dev/null; then
+    if _pip_install lxmf; then
+        _ok "LXMF installed"
+    else
+        _warn "pip install lxmf failed — falling back to venv at /opt/rns-venv"
+        apt-get install -y -qq python3-venv 2>/dev/null || true
+        [ -x /opt/rns-venv/bin/python3 ] || python3 -m venv /opt/rns-venv
+        PYTHON=/opt/rns-venv/bin/python3
+        "$PYTHON" -m pip install --quiet rns lxmf
+        _ok "RNS + LXMF installed in /opt/rns-venv"
+    fi
+else
+    _ok "LXMF already installed  ($("$PYTHON" -c "import LXMF; print(LXMF.__version__)" 2>/dev/null))"
 fi
 
 # Optional: smbus2 for I²C battery monitoring
@@ -280,9 +301,9 @@ fi
 
 # Standalone agent RNS config — lets the agent call get_interface_stats() without
 # hitting the shared-instance RPC auth bug that blocks RNode stat collection.
-if [ ! -f /etc/bloxx/rns_agent/config ]; then
-    mkdir -p /etc/bloxx/rns_agent
-    cat > /etc/bloxx/rns_agent/config << 'EOF'
+if [ ! -f /etc/rbloxx/rns_agent/config ]; then
+    mkdir -p /etc/rbloxx/rns_agent
+    cat > /etc/rbloxx/rns_agent/config << 'EOF'
 [reticulum]
   enable_transport = False
   share_instance = No
@@ -298,7 +319,7 @@ if [ ! -f /etc/bloxx/rns_agent/config ]; then
     target_host = 127.0.0.1
     target_port = 4965
 EOF
-    _ok "Created standalone agent RNS config at /etc/bloxx/rns_agent/config"
+    _ok "Created standalone agent RNS config at /etc/rbloxx/rns_agent/config"
 else
     _ok "Standalone agent RNS config already exists"
 fi
@@ -349,16 +370,16 @@ fi
 # ---------------------------------------------------------------------------
 _step "[5/7] Creating node identity..."
 
-mkdir -p /etc/bloxx
+mkdir -p /etc/rbloxx
 
-if [ -f /etc/bloxx/identity ]; then
-    _ok "Identity already exists at /etc/bloxx/identity"
+if [ -f /etc/rbloxx/identity ]; then
+    _ok "Identity already exists at /etc/rbloxx/identity"
 else
     "$PYTHON" - << PYEOF
 import RNS, os
-os.makedirs('/etc/bloxx', exist_ok=True)
+os.makedirs('/etc/rbloxx', exist_ok=True)
 identity = RNS.Identity()
-identity.to_file('/etc/bloxx/identity')
+identity.to_file('/etc/rbloxx/identity')
 print("  [ok] Identity created  (hash: " + identity.hash.hex() + ")")
 PYEOF
 fi
@@ -397,7 +418,7 @@ _needs_server_hash() {
     "$PYTHON" - << 'PYEOF' 2>/dev/null
 import json, sys
 try:
-    cfg = json.load(open('/etc/bloxx/agent.json'))
+    cfg = json.load(open('/etc/rbloxx/agent.json'))
     hashes = [h for h in cfg.get('server_dest_hashes', [])
               if h and h != 'PASTE_SERVER_DEST_HASH_HERE']
     sys.exit(0 if not hashes else 1)
@@ -415,7 +436,7 @@ _prompt_server_hash() {
     SERVER_HASH="${SERVER_HASH:-PASTE_SERVER_DEST_HASH_HERE}"
 }
 
-if [ ! -f /etc/bloxx/agent.json ]; then
+if [ ! -f /etc/rbloxx/agent.json ]; then
     _prompt_server_hash
 
     if [ -n "$RNODE_PORT" ]; then
@@ -424,49 +445,49 @@ if [ ! -f /etc/bloxx/agent.json ]; then
         RNODE_PORTS_JSON=""
     fi
 
-    cat > /etc/bloxx/agent.json << EOF
+    cat > /etc/rbloxx/agent.json << EOF
 {
-  "identity_path": "/etc/bloxx/identity",
+  "identity_path": "/etc/rbloxx/identity",
   "announce_interval": 300,
   "server_dest_hashes": ["$SERVER_HASH"],
   "rnode_ports": [$RNODE_PORTS_JSON],
   "shutdown_soc_pct": 0,
   "watchdog_feed_interval_s": 10,
-  "rns_configdir": "/etc/bloxx/rns_agent"
+  "rns_configdir": "/etc/rbloxx/rns_agent"
 }
 EOF
-    _ok "Created /etc/bloxx/agent.json"
+    _ok "Created /etc/rbloxx/agent.json"
 elif _needs_server_hash; then
     _warn "agent.json has no server hash — let's fix that"
     _prompt_server_hash
     if [ "$SERVER_HASH" != "PASTE_SERVER_DEST_HASH_HERE" ]; then
         "$PYTHON" - "$SERVER_HASH" << 'PYEOF'
 import json, sys
-path = '/etc/bloxx/agent.json'
+path = '/etc/rbloxx/agent.json'
 cfg = json.load(open(path))
 cfg['server_dest_hashes'] = [sys.argv[1]]
 json.dump(cfg, open(path, 'w'), indent=2)
 print()
 PYEOF
-        _ok "Updated server_dest_hashes in /etc/bloxx/agent.json"
+        _ok "Updated server_dest_hashes in /etc/rbloxx/agent.json"
     else
-        _warn "Still no server hash — edit /etc/bloxx/agent.json manually and restart bloxx-agent"
+        _warn "Still no server hash — edit /etc/rbloxx/agent.json manually and restart rbloxx-agent"
     fi
 else
-    _ok "/etc/bloxx/agent.json already configured"
+    _ok "/etc/rbloxx/agent.json already configured"
 fi
 
-# bloxx-agent
-if [ ! -f /etc/systemd/system/bloxx-agent.service ]; then
-    cat > /etc/systemd/system/bloxx-agent.service << EOF
+# rbloxx-agent
+if [ ! -f /etc/systemd/system/rbloxx-agent.service ]; then
+    cat > /etc/systemd/system/rbloxx-agent.service << EOF
 [Unit]
-Description=Bloxx Node Agent
+Description=RBloxx Node Agent
 After=network.target rnsd.service
 Wants=rnsd.service
 
 [Service]
 ExecStartPre=/bin/sleep 15
-ExecStart=$PYTHON $NODE_DIR/bloxx_agent.py /etc/bloxx/agent.json
+ExecStart=$PYTHON $NODE_DIR/rbloxx_agent.py /etc/rbloxx/agent.json
 Restart=on-failure
 RestartSec=10
 User=root
@@ -475,9 +496,9 @@ WorkingDirectory=$NODE_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
-    _ok "Created bloxx-agent.service"
+    _ok "Created rbloxx-agent.service"
 else
-    _ok "bloxx-agent.service already exists"
+    _ok "rbloxx-agent.service already exists"
 fi
 
 # ---------------------------------------------------------------------------
@@ -490,16 +511,18 @@ systemctl enable rnsd        --quiet
 systemctl restart rnsd
 _ok "rnsd running"
 sleep 3
-systemctl enable bloxx-agent --quiet
-systemctl restart bloxx-agent
-_ok "bloxx-agent running"
+systemctl enable rbloxx-agent --quiet
+systemctl restart rbloxx-agent
+_ok "rbloxx-agent running"
 
-# Compute destination hash now that rnsd shared instance is up
+# Compute destination hash now that rnsd shared instance is up. Must match
+# --show-hash above: the agent listens on LXMF's hardcoded ("lxmf","delivery")
+# destination (register_delivery_identity), not a custom app/aspect.
 DEST_HASH=$("$PYTHON" - << PYEOF 2>/dev/null || true
 import RNS
 RNS.Reticulum(loglevel=0)
-identity = RNS.Identity.from_file('/etc/bloxx/identity')
-dest = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, 'bloxx', 'node')
+identity = RNS.Identity.from_file('/etc/rbloxx/identity')
+dest = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, 'lxmf', 'delivery')
 print(dest.hash.hex())
 PYEOF
 )

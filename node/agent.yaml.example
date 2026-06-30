@@ -1,7 +1,7 @@
-# Bloxx node agent configuration
+# RBloxx node agent configuration
 
 # Stable RNS identity for this node (created automatically on first run)
-identity_path: /etc/bloxx/identity
+identity_path: /etc/rbloxx/identity
 
 # Interval between announces and telemetry pushes (seconds)
 announce_interval: 300
